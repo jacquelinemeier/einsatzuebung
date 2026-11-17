@@ -1086,7 +1086,7 @@ input, select, textarea { font: inherit; }
 .org-el::after { content: ""; position: absolute; bottom: 0; left: 50%; height: 26px; border-left: 2px solid var(--blue); }
 .obox { background: #fff; border: 2px solid var(--blue); min-width: 168px; max-width: 330px; width: max-content; color: var(--blue); }
 .obox .oh { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 10px; background: #e9ecf5; border-bottom: 2px solid var(--blue); }
-.obox.el .oh { background: var(--blue); color: #fff; }
+.obox.eltop .oh { background: var(--blue); color: #fff; }
 .obox .oh b { font-size: 15px; white-space: nowrap; }
 .obox .oh span { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .obox .oh button { margin-left: auto; width: 28px; height: 26px; border-radius: 5px; display: grid; place-items: center; color: inherit; opacity: .75; }
@@ -2317,7 +2317,8 @@ function waitFor(cond, ms) {
   });
 }
 async function post(body) {
-  if (!NET.ch) { toast('Keine Verbindung zur Zentrale'); return { ok: false }; }
+  // Live-Verbindung gestört → Auftrag über die Datenbank schicken (Ersatzweg)
+  if (!NET.ch || NET.chStatus !== 'SUBSCRIBED') return postDb(body);
   const reqId = rid();
   const answer = new Promise((res) => {
     const t = setTimeout(() => { NET.pend.delete(reqId); res({ ok: false, error: 'Keine Antwort von der Zentrale' }); }, 12000);
@@ -2325,11 +2326,41 @@ async function post(body) {
   });
   let r;
   try { r = await NET.ch.send({ type: 'broadcast', event: 'action', payload: { reqId, from: APPX.user.id, role: ROLE, body } }); } catch (e) { r = 'error'; }
-  if (r !== 'ok') { NET.pend.delete(reqId); toast('Keine Verbindung zur Zentrale'); return { ok: false }; }
+  if (r !== 'ok') { NET.pend.delete(reqId); return postDb(body); }
   const j = await answer;
   if (j.id && !sim.incById(j.id)) await waitFor(() => !!sim.incById(j.id), 4000);
   if (!j.ok && j.error) toast(j.error);
   return j;
+}
+async function postDb(body) {
+  const id = rid() + rid();
+  const { error } = await APPX.sb.from('aktionen').insert({ id, body });
+  if (error) { console.error(error); toast('Keine Verbindung zur Zentrale'); return { ok: false }; }
+  for (let i = 0; i < 25; i++) {
+    await new Promise((r) => setTimeout(r, 800));
+    const { data } = await APPX.sb.from('aktionen').select('result').eq('id', id).maybeSingle();
+    if (data && data.result) {
+      const j = data.result;
+      await pollSnap(true);
+      if (j.id && !sim.incById(j.id)) await waitFor(() => !!sim.incById(j.id), 6000);
+      if (!j.ok && j.error) toast(j.error);
+      return j;
+    }
+  }
+  toast('Keine Antwort von der Zentrale');
+  return { ok: false };
+}
+// Stand aus der Datenbank holen (Ersatzweg, wenn keine Live-Daten kommen)
+async function pollSnap(force) {
+  if (NET.snapPolling || NET.host) return;
+  NET.snapPolling = true; NET.lastSnapPoll = Date.now();
+  try {
+    const { data, error } = await APPX.sb.from('uebung_state').select('snap_z,host_name').eq('id', 1).maybeSingle();
+    if (error || !data || !data.snap_z) return;
+    NET.hostName = data.host_name || NET.hostName;
+    const s = JSON.parse(await unpack(data.snap_z));
+    if (!s.savedAt || s.savedAt > (NET.lastSavedAt || 0)) { NET.viaDb = true; NET.lastSnap = Date.now(); applySnap(s); }
+  } catch (e) { console.error(e); } finally { NET.snapPolling = false; }
 }
 // Alle Änderungen laufen über api.* – in der Zentrale direkt, sonst über die Zentrale
 const api = {
@@ -2391,6 +2422,7 @@ for (const k of Object.keys(api)) {
 }
 
 function applySnap(s) {
+  if (s.savedAt) NET.lastSavedAt = Math.max(NET.lastSavedAt || 0, s.savedAt);
   sim.now = s.now; sim.speed = s.speed; sim.auto = s.auto; sim.nextNr = s.nextNr; sim.routing = s.routing;
   sim.vehicles = s.vehicles; sim.incidents = s.incidents;
   sim.reindex();
@@ -2469,6 +2501,32 @@ async function tryClaim(force) {
   NET.hostName = (data && data.host_name) || NET.hostName;
   return false;
 }
+// Zentrale: Aufträge, die über den Ersatzweg (Datenbank) kommen
+async function pollActions() {
+  if (NET.actBusy) return;
+  NET.actBusy = true; NET.lastActPoll = Date.now();
+  try {
+    const { data, error } = await APPX.sb.from('aktionen').select('id,body,rolle').is('result', null).order('created_at').limit(25);
+    if (error) { console.error(error); return; }
+    if (data && data.length) {
+      for (const row of data) {
+        const b = row.body || {};
+        let res;
+        if (LEAD_ONLY.has(b.type) && row.rolle !== 'leitung') res = { ok: false, error: 'Nur für die Übungsleitung' };
+        else { try { res = doAction(b); } catch (e) { console.error(e); res = { ok: false, error: 'Fehler in der Zentrale' }; } }
+        await APPX.sb.from('aktionen').update({ result: res }).eq('id', row.id);
+      }
+      await beat();
+      publishSnap(true);
+      render();
+    }
+    // erledigte Aufträge gelegentlich aufräumen
+    if (Date.now() - (NET.lastCleanup || 0) > 600000) {
+      NET.lastCleanup = Date.now();
+      await APPX.sb.from('aktionen').delete().lt('created_at', new Date(Date.now() - 3 * 3600e3).toISOString());
+    }
+  } catch (e) { console.error(e); } finally { NET.actBusy = false; }
+}
 // Die Zentrale nimmt Aufträge der anderen Geräte entgegen
 const LEAD_ONLY = new Set(['create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung']);
 function doAction(b) {
@@ -2530,7 +2588,12 @@ async function connectNet() {
   const ch = sb.channel('uebung', { config: { private: true, broadcast: { ack: true, self: false } } });
   ch.on('broadcast', { event: 'snap' }, async ({ payload }) => {
     if (!REMOTE || !payload) return;
-    try { const s = JSON.parse(await unpack(payload.z)); NET.lastSnap = Date.now(); if (!NET.ok) { NET.ok = true; } applySnap(s); } catch (e) { console.error(e); }
+    try {
+      const s = JSON.parse(await unpack(payload.z));
+      NET.lastLive = Date.now(); NET.viaDb = false;
+      if (s.savedAt && s.savedAt < (NET.lastSavedAt || 0)) return;
+      NET.lastSnap = Date.now(); NET.ok = true; applySnap(s);
+    } catch (e) { console.error(e); }
   });
   ch.on('broadcast', { event: 'action' }, ({ payload }) => { if (NET.host) handleAction(payload); });
   ch.on('broadcast', { event: 'result' }, ({ payload }) => { const f = payload && NET.pend.get(payload.reqId); if (f) { NET.pend.delete(payload.reqId); f(payload); } });
@@ -2541,8 +2604,7 @@ async function connectNet() {
     if (status === 'SUBSCRIBED') { if (REMOTE) ch.send({ type: 'broadcast', event: 'hello', payload: {} }); else publishSnap(true); }
     else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
       if (err) console.error(err);
-      if (REMOTE) NET.ok = false;
-      if (status === 'CHANNEL_ERROR' && !NET.chErrShown) { NET.chErrShown = true; toast('Live-Verbindung wurde abgelehnt oder ist gestört. Verbindung wird erneut versucht …'); }
+      if (!NET.chErrShown) { NET.chErrShown = true; toast('Live-Verbindung gestört – die Übung läuft über den Ersatzweg weiter (Aktualisierung alle paar Sekunden).'); }
       renderTop();
     }
   });
@@ -2550,8 +2612,9 @@ async function connectNet() {
 }
 // Geräte ohne Zentrale: Verbindung überwachen, Übungsleitung übernimmt bei Ausfall automatisch
 function netWatch() {
+  if (Date.now() - (NET.lastLive || 0) > 4500 && Date.now() - (NET.lastSnapPoll || 0) > 2500) pollSnap();
   const age = Date.now() - NET.lastSnap;
-  NET.ok = age < 9000;
+  NET.ok = age < 12000;
   if (ROLE === 'leitung' && age > 25000 && !NET.claiming && Date.now() - NET.lastClaimTry > 15000) {
     NET.claiming = true; NET.lastClaimTry = Date.now();
     tryClaim(false).finally(() => { NET.claiming = false; });
@@ -2884,8 +2947,10 @@ function renderTop() {
   p.classList.toggle('live', af.on || ar.on);
   if (ONLINE && NET.host) p.textContent += ' · ZENTRALE';
   const offline = ONLINE && REMOTE && !NET.ok;
+  const ersatz = ONLINE && REMOTE && NET.ok && NET.viaDb;
   if (offline) { p.textContent = 'KEINE VERBINDUNG'; p.classList.remove('live'); p.classList.add('off'); } else p.classList.remove('off');
-  if (ROLE === 'anwender') p.hidden = !offline;
+  if (ersatz) { p.textContent = 'ERSATZVERBINDUNG'; p.title = 'Live-Verbindung gestört – Aktualisierung alle paar Sekunden über den Ersatzweg'; } else p.title = '';
+  if (ROLE === 'anwender') p.hidden = !(offline || ersatz);
   $('#title').textContent = { details: 'Einsatz', lage: 'Lagekarte', fleet: 'Fahrzeuge' }[UI.view];
   for (const [id, v] of [['#tvDetails', 'details'], ['#tvLage', 'lage'], ['#tvFleet', 'fleet']]) $(id).classList.toggle('on', UI.view === v);
 }
@@ -3392,7 +3457,7 @@ function renderAB() {
   if (!inc) { $('#ab').hidden = true; return; }
   const s = inc.sections;
   $('#abSub').textContent = `${inc.stw} ${inc.schlagwort} · ${inc.addr.street} · Nr. ${inc.nr}`;
-  let h = `<div class="org"><div class="org-el">${oboxHTML(s.el, 'el', 'EL')}</div><div class="org-row">`;
+  let h = `<div class="org"><div class="org-el">${oboxHTML(s.el, 'eltop', 'EL')}</div><div class="org-row">`;
   for (const e of s.eas) {
     h += `<div class="org-col">${oboxHTML(e, 'ea', e.label)}${e.subs.length ? `<div class="org-subs">${e.subs.map((u) => `<div class="org-sub">${oboxHTML(u, 'eua', u.label)}</div>`).join('')}</div>` : ''}</div>`;
   }
@@ -4613,6 +4678,16 @@ document.addEventListener('input', (e) => {
   if (e.target.id === 'ulRateRd') { $('#ulRateRdV').textContent = e.target.value + '/h'; clearTimeout(UI.rt2); UI.rt2 = setTimeout(() => api.auto({ rd: { perHour: +e.target.value } }), 250); }
 });
 
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const ae = document.activeElement;
+  if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && ae.value && !$('#ov').hidden === false) { ae.blur(); return; }
+  if (!$('#menu').hidden) { $('#menu').hidden = true; return; }
+  if (!$('#ov').hidden) { closeSheet(); return; }
+  if (!$('#lk').hidden) { if (LK.tool) { lkCancel(); renderLk(true); } else closeLk(); return; }
+  if (!$('#ab').hidden) { $('#ab').hidden = true; render(true); return; }
+  if (!$('#el').hidden) { closeEL(); return; }
+});
 sim.listeners.push((type, inc) => {
   if (type === 'incident' && UI.autoFlag) toast(`Neuer Einsatz: ${inc.title} – ${inc.addr.street}`);
 });
@@ -4645,7 +4720,8 @@ async function tickOnce() {
   if (sim.autoDue('rd', dt)) { await newIncident({ key: sim.autoKey('rd') }); }
   if (NET.host) {
     if (Date.now() - NET.lastPub >= 2000) publishSnap();
-    if (Date.now() - NET.lastBeat >= 10000) beat();
+    if (Date.now() - NET.lastBeat >= 4000) beat();
+    if (Date.now() - (NET.lastActPoll || 0) >= 2000) pollActions();
   }
   render();
 }
