@@ -2236,6 +2236,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
+const APP_VERSION = '2026-11-17 18:23';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -2395,6 +2396,7 @@ const api = {
     if (REMOTE) { await post(Object.assign({ type: 'auto' }, patch)); return; }
     applyAuto(patch);
   },
+  async clock() { if (REMOTE) await post({ type: 'clock' }); else { sim.now = Date.now(); sim.speed = 1; } },
   async reset() { if (REMOTE) await post({ type: 'reset' }); else { sim.reset(); sim.now = Date.now(); } },
   async photo(inc, data, caption) {
     let url = data;
@@ -2422,7 +2424,8 @@ for (const k of Object.keys(api)) {
 }
 
 function applySnap(s) {
-  if (s.savedAt) NET.lastSavedAt = Math.max(NET.lastSavedAt || 0, s.savedAt);
+  if (s.v !== APP_VERSION && !NET.verWarned) { NET.verWarned = true; alertVersion(s.v); }
+  if (s.savedAt) { NET.lastSavedAt = Math.max(NET.lastSavedAt || 0, s.savedAt); NET.snapNow = s.now; NET.snapAt = s.savedAt; }
   sim.now = s.now; sim.speed = s.speed; sim.auto = s.auto; sim.nextNr = s.nextNr; sim.routing = s.routing;
   sim.vehicles = s.vehicles; sim.incidents = s.incidents;
   sim.reindex();
@@ -2440,13 +2443,19 @@ function applySnap(s) {
   if (!UI.drag) render();
 }
 
+function alertVersion(other) {
+  const d = document.createElement('div');
+  d.className = 'toast'; d.style.cssText = 'bottom:auto;top:70px;background:#b4231b;max-width:560px;text-align:center';
+  d.innerHTML = 'Dieses Gerät und die Zentrale nutzen unterschiedliche Versionen des Tools (' + esc(APP_VERSION) + ' / ' + esc(other || 'alt') + ').<br><b>Bitte auf allen Geräten mit Strg + F5 neu laden</b> – sonst funktionieren Anforderungen nicht.';
+  document.body.appendChild(d);
+}
 /* ---------- Zentrale (nur Übungsleitung) ---------- */
 function buildSnap() {
   return {
     now: sim.now, speed: sim.speed, auto: sim.auto, nextNr: sim.nextNr, routing: sim.routing, lage: sim.lage, incidents: sim.incidents,
     // Straßenverläufe bleiben in der Zentrale, die Geräte bekommen nur die Positionen
     vehicles: sim.vehicles.map((v) => (v.job && v.job.path ? Object.assign({}, v, { job: Object.assign({}, v.job, { path: undefined, cum: undefined }) }) : v)),
-    savedAt: Date.now(),
+    savedAt: Date.now(), v: APP_VERSION,
   };
 }
 let pubTimer = null;
@@ -2479,7 +2488,16 @@ async function keepAwake() {
   try { NET.wake = await navigator.wakeLock.request('screen'); } catch (e) { /* nicht unterstützt */ }
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') keepAwake(); });
+// Verpasste Zeit nachholen (z. B. nach Neustart oder Ruhezustand), in Schritten, damit Abläufe korrekt weiterlaufen
+function catchUp(realMs) {
+  if (!(realMs > 1500)) return;
+  realMs = Math.min(realMs, 24 * 3600e3);
+  const steps = Math.min(400, Math.ceil(realMs / 5000));
+  for (let i = 0; i < steps; i++) sim.tick(realMs / steps);
+}
 function becomeHost() {
+  // Uhr auf echte Zeit nachführen: Stand der letzten Sicherung + seitdem vergangene Zeit
+  if (NET.snapNow && NET.snapAt) { sim.now = NET.snapNow; catchUp(Date.now() - NET.snapAt); }
   REMOTE = false; NET.host = true; NET.ok = true; NET.hostName = APPX.user.name;
   keepAwake();
   lastT = performance.now();
@@ -2528,7 +2546,7 @@ async function pollActions() {
   } catch (e) { console.error(e); } finally { NET.actBusy = false; }
 }
 // Die Zentrale nimmt Aufträge der anderen Geräte entgegen
-const LEAD_ONLY = new Set(['create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung']);
+const LEAD_ONLY = new Set(['create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung', 'clock']);
 function doAction(b) {
   const inc = b.incId ? sim.incById(b.incId) : null;
   const needInc = ['nachalarm', 'request', 'retry', 'custom-add', 'custom-set', 'drawings', 'erhoehen', 'end', 'sections', 'log', 'rueckmeldung', 'photo'];
@@ -2556,6 +2574,7 @@ function doAction(b) {
     case 'rueckmeldung': inc.log.push({ t: sim.now, text: 'Rückmeldung: ' + String(b.text || '').slice(0, 4000), kind: 'lage' }); return { ok: true };
     case 'speed': sim.speed = [1, 2, 5, 10].includes(+b.v) ? +b.v : 1; return { ok: true };
     case 'auto': applyAuto(b); return { ok: true };
+    case 'clock': sim.now = Date.now(); sim.speed = 1; return { ok: true };
     case 'reset': sim.reset(); sim.now = Date.now(); sim.lage.drawings = []; return { ok: true };
     case 'photo': {
       if (!/^https:\/\//.test(String(b.data || ''))) return { ok: false, error: 'Foto fehlt' };
@@ -3408,8 +3427,9 @@ function ulExtra() {
     : `<div class="hint">Die Zentrale läuft bei <b>${esc(NET.hostName || 'niemandem')}</b>.${NET.ok ? '' : ' Zurzeit keine Verbindung.'}</div><button class="btn sec" data-act="claim">Zentrale auf diese Seite holen</button>`}</div>` : '';
   const stamm = `<div class="grp2"><h5>Stammdaten</h5><div class="hint">AAO, Wachen, Fahrzeuge, Schlagworte, Adressen und Bereichsfolgen – ${ONLINE ? 'geschützt in Supabase' : 'nur auf diesem Gerät'}${stand}. Nach dem Hochladen einer neuen Datei alle Geräte neu laden.</div>
     <div class="el-row"><button class="btn sm sec" data-act="stamm-dl">Herunterladen</button><label class="btn sm sec filebtn">Neue Datei hochladen<input type="file" id="stammFile" accept=".js,text/javascript,text/plain"></label></div></div>`;
+  const version = `<div class="hint">Version ${esc(APP_VERSION)}</div>`;
   const konto = ONLINE ? `<div class="grp2"><h5>Angemeldet</h5><div class="hint">${esc(APPX.user.name)} · Übungsleitung</div><button class="btn sec" data-act="logout">Abmelden</button></div>` : '';
-  return zentrale + stamm + konto;
+  return uhr + zentrale + stamm + konto + version;
 }
 async function uploadStamm(file) {
   if (!file) return;
@@ -4528,6 +4548,7 @@ document.addEventListener('click', async (e) => {
     case 'new-inc': openNew(); break;
     case 'open-ul': UI.confirmReset = false; openUL(); break;
     case 'claim': if (await tryClaim(true)) refreshUL(); break;
+    case 'clock-now': await api.clock(); toast('Übungsuhr steht auf ' + new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })); render(true); refreshUL(); break;
     case 'logout':
       if (NET.host) { await beat(); try { await APPX.sb.rpc('release_host', { p_sid: APPX.sid }); } catch (err) { /* egal */ } NET.host = false; }
       await APPX.sb.auth.signOut(); location.reload(); break;
@@ -4706,7 +4727,8 @@ function startTicker(fn) {
 startTicker(() => { tickOnce().catch((e) => console.error(e)); });
 async function tickOnce() {
   const now = performance.now();
-  const dt = Math.min(5000, now - lastT);
+  const elapsed = now - lastT;
+  const dt = Math.min(5000, elapsed);
   lastT = now;
   if (REMOTE) {
     // Gerät ohne Zentrale: nur die Uhr weiterlaufen lassen, der Stand kommt von der Zentrale
@@ -4715,7 +4737,8 @@ async function tickOnce() {
     render();
     return;
   }
-  sim.tick(dt);
+  // Hing der Rechner (Ruhezustand, Hintergrund), wird die verpasste Zeit nachgeholt – die Uhr bleibt auf Echtzeit
+  if (elapsed > 6000) catchUp(elapsed); else sim.tick(dt);
   if (sim.autoDue('fire', dt)) { UI.autoFlag = true; await newIncident({ key: sim.autoKey('fire') }); UI.autoFlag = false; }
   if (sim.autoDue('rd', dt)) { await newIncident({ key: sim.autoKey('rd') }); }
   if (NET.host) {
