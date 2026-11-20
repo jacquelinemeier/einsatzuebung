@@ -684,6 +684,9 @@ svg.leaflet-image-layer.leaflet-interactive path {
 		print-color-adjust: exact;
 		}
 	}
+.stset { display: flex; flex-wrap: wrap; gap: 6px; }
+.stset .btn { gap: 6px; min-width: 52px; justify-content: center; }
+.stset .btn.on { outline: 2px solid var(--blue); }
 </style>
 <style>/* Einsatzübung – eigenes Erscheinungsbild in Bochum-Blau.
    Layout: Kopfleiste, Einsatzliste links; Einsatz mit Karte und Infokarten oben,
@@ -2108,7 +2111,7 @@ function createSim() {
     for (const v of S.vehicles) {
       const j = v.job;
       if (!j && v.status === 2 && !onDuty(v)) v.status = 6;
-      if (!j && v.status === 6 && onDuty(v)) v.status = 2;
+      if (!j && v.status === 6 && onDuty(v) && !v.oos) v.status = 2;
       if (!j || v.carriedBy) continue;
       const inc = v.incidentId ? incById(v.incidentId) : null;
       if (j.phase === 'alarm' && t >= j.until) {
@@ -2219,8 +2222,72 @@ function createSim() {
     emit('update');
   }
 
+  // Status von Hand setzen (Übungsleitung), z. B. wenn etwas nicht schnell genug geht
+  function setStatus(v, st) {
+    st = String(st);
+    const inc = v.incidentId ? incById(v.incidentId) : (v.transportInc ? incById(v.transportInc) : null);
+    const j = v.job;
+    const toHome = (x) => {
+      x.job = null; x.pos = homeOf(x).slice(); x.transportInc = null; x.status = 2;
+      if (x.carry) { const a = byId(x.carry); a.carriedBy = null; a.incidentId = null; a.status = 2; a.pos = homeOf(a).slice(); x.carry = null; }
+    };
+    const fail = (msg) => ({ ok: false, error: msg });
+    if (v.carriedBy) return fail('Abrollbehälter folgen ihrem Trägerfahrzeug – bitte dort den Status setzen.');
+    if (v.block) {
+      if (st === '3' || st === '4') {
+        if (!v.incidentId || !inc) return fail('Die Einheit ist in keinem Einsatz.');
+        if (j && j.phase === 'alarm') ffDepart(v, inc, j.force);
+        if (st === '4') for (const m of v.members.map(byId)) if (m.incidentId === inc.id && m.job && (m.job.phase === 'drive' || m.job.phase === 'alarm')) arrive(m, inc);
+      } else if (st === '1' || st === '2' || st === '6') {
+        if (v.incidentId) release(v);
+        if (st !== '1') { for (const m of v.members.map(byId)) if (!m.incidentId) { toHome(m); m.oos = st === '6'; if (st === '6') m.status = 6; } v.job = null; v.status = st === '6' ? 6 : 2; v.oos = st === '6'; }
+      } else return fail('Für eine ganze Einheit gehen nur die Status 1, 2, 3, 4 und 6.');
+      if (inc) log(inc, `${v.name}: Status ${st} durch Übungsleitung gesetzt`, 'info');
+      emit('update');
+      return { ok: true };
+    }
+    v.oos = false;
+    switch (st) {
+      case '3':
+        if (!v.incidentId || !inc) return fail('Status 3 geht nur für Fahrzeuge in einem Einsatz.');
+        if (j && j.phase === 'alarm') { v.status = 3; const mu = unitOf(inc, v.id); if (mu) mu.marschAt = S.now; startTrip(v, 'drive', inc.pos, v.org === 'RD' ? 50 : 48); }
+        else if (!(j && j.phase === 'drive')) return fail('Das Fahrzeug ist schon über Status 3 hinaus.');
+        break;
+      case '4':
+        if (!v.incidentId || !inc) return fail('Status 4 geht nur für Fahrzeuge in einem Einsatz.');
+        if (j && (j.phase === 'alarm' || j.phase === 'drive')) { const mu = unitOf(inc, v.id); if (mu && !mu.marschAt) mu.marschAt = S.now; arrive(v, inc); }
+        break;
+      case '7':
+        if (!v.incidentId || !inc) return fail('Status 7 geht nur für Fahrzeuge in einem Einsatz.');
+        if (!(j && j.phase === 'scene')) { const mu = unitOf(inc, v.id); if (mu && !mu.marschAt) mu.marschAt = S.now; arrive(v, inc); }
+        startTransport(v, inc);
+        break;
+      case '8':
+        if (!(j && j.phase === 'transport')) return fail('Status 8 geht nur während eines Transports (Status 7).');
+        v.pos = j.to.slice(); v.status = 8; v.job = { phase: 'hosp', until: S.now + R.int(8, 18) * 60000 };
+        break;
+      case '1':
+        if (v.incidentId) release(v);
+        else if (j && (j.phase === 'transport' || j.phase === 'hosp')) goHome(v);
+        else v.status = 1;
+        break;
+      case '2':
+        if (v.incidentId) release(v);
+        toHome(v);
+        break;
+      case '6':
+        if (v.incidentId) release(v);
+        toHome(v); v.status = 6; v.oos = true;
+        break;
+      default: return fail('Unbekannter Status');
+    }
+    if (inc) log(inc, `${v.name}: Status ${st} durch Übungsleitung gesetzt`, 'info');
+    emit('update');
+    return { ok: true };
+  }
+
   return Object.assign(S, {
-    byId, incById, homeOf, isFree, onDuty, createIncident, nachalarm, request, addCustom, setCustom, erhoehen, release, endIncident, tick,
+    setStatus, byId, incById, homeOf, isFree, onDuty, createIncident, nachalarm, request, addCustom, setCustom, erhoehen, release, endIncident, tick,
     makeSections, applyTemplate, allSlots, removeFromSections, unassigned, autoKey, autoDue, reset,
     zustaendigeLE, bereichsfolge, pickVehicle, reindex, setRouter: (fn) => { ROUTE.fn = fn; },
   });
@@ -2236,7 +2303,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-20 08:13';
+const APP_VERSION = '2026-11-20 08:54';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -2244,7 +2311,7 @@ const ROLE = APPX.role;
 const CAN_LEAD = ROLE !== 'anwender';
 document.documentElement.dataset.role = ROLE;
 document.documentElement.dataset.mode = APPX.mode;
-const NET = { ok: !ONLINE, host: false, hostName: '', photosSeen: null, ch: null, pend: new Map(), waiters: [], lastSnap: 0, lastPub: 0, lastBeat: 0, beatErr: 0, sizeWarned: false, claiming: false, lastClaimTry: 0 };
+const NET = { pendSec: {}, ok: !ONLINE, host: false, hostName: '', photosSeen: null, ch: null, pend: new Map(), waiters: [], lastSnap: 0, lastPub: 0, lastBeat: 0, beatErr: 0, sizeWarned: false, claiming: false, lastClaimTry: 0 };
 // Gesamtlage: Lagekarte unabhängig von einem Einsatz (z. B. Stabslage)
 const LAGE_ID = '__lage';
 sim.lage = { drawings: ONLINE ? [] : (() => { try { const v = JSON.parse(localStorage.getItem('fa-lage') || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; } })() };
@@ -2388,7 +2455,15 @@ const api = {
   async erhoehen(inc, stw) { if (REMOTE) await post({ type: 'erhoehen', incId: inc.id, stw }); else sim.erhoehen(inc, stw); },
   async release(v) { if (REMOTE) await post({ type: 'release', vid: v.id }); else sim.release(v); },
   async end(inc) { if (REMOTE) await post({ type: 'end', incId: inc.id }); else sim.endIncident(inc, 'manual'); },
-  async sections(inc) { if (REMOTE) await post({ type: 'sections', incId: inc.id, sections: inc.sections }); },
+  async sections(inc) {
+    if (!REMOTE) return;
+    // eigene Änderung festhalten, damit ein älterer Stand der Zentrale sie nicht zwischendurch überschreibt
+    const rec = { d: JSON.parse(JSON.stringify(inc.sections)) };
+    NET.pendSec[inc.id] = rec;
+    const j = await post({ type: 'sections', incId: inc.id, sections: rec.d });
+    if (NET.pendSec[inc.id] === rec) delete NET.pendSec[inc.id];
+    if (!j.ok) { toast('Abschnitte konnten nicht gespeichert werden'); await pollSnap(true); render(true); }
+  },
   async log(inc, text, kind) { if (REMOTE) await post({ type: 'log', incId: inc.id, text, kind }); else inc.log.push({ t: sim.now, text, kind: kind || 'info' }); },
   async rueckmeldung(inc, text) { if (REMOTE) await post({ type: 'rueckmeldung', incId: inc.id, text }); else inc.log.push({ t: sim.now, text: 'Rückmeldung: ' + text, kind: 'lage' }); },
   async speed(v) { if (REMOTE) await post({ type: 'speed', v }); else sim.speed = v; },
@@ -2396,6 +2471,7 @@ const api = {
     if (REMOTE) { await post(Object.assign({ type: 'auto' }, patch)); return; }
     applyAuto(patch);
   },
+  async setStatus(v, st) { if (REMOTE) return post({ type: 'status', vid: v.id, st }); return sim.setStatus(v, st); },
   async clock() { if (REMOTE) await post({ type: 'clock' }); else { sim.now = Date.now(); sim.speed = 1; } },
   async reset() { if (REMOTE) await post({ type: 'reset' }); else { sim.reset(); sim.now = Date.now(); } },
   async photo(inc, data, caption) {
@@ -2430,6 +2506,7 @@ function applySnap(s) {
   sim.vehicles = s.vehicles; sim.incidents = s.incidents;
   sim.reindex();
   if (s.lage && Array.isArray(s.lage.drawings)) sim.lage = s.lage;
+  for (const id in NET.pendSec) { const i = sim.incById(id); if (i) i.sections = JSON.parse(JSON.stringify(NET.pendSec[id].d)); }
   if (typeof LK !== 'undefined' && LK.pending) { if (LK.pending.id === LAGE_ID) sim.lage.drawings = LK.pending.d; else { const i = sim.incById(LK.pending.id); if (i) i.drawings = LK.pending.d; } }
   // neue Fotos melden
   const seen = NET.photosSeen;
@@ -2531,14 +2608,17 @@ async function pollActions() {
     const { data, error } = await APPX.sb.from('aktionen').select('id,body,rolle').is('result', null).order('created_at').limit(25);
     if (error) { console.error(error); return; }
     if (data && data.length) {
+      const done = [];
       for (const row of data) {
         const b = row.body || {};
         let res;
         if (LEAD_ONLY.has(b.type) && row.rolle !== 'leitung') res = { ok: false, error: 'Nur für die Übungsleitung' };
         else { try { res = doAction(b); } catch (e) { console.error(e); res = { ok: false, error: 'Fehler in der Zentrale' }; } }
-        await APPX.sb.from('aktionen').update({ result: res }).eq('id', row.id);
+        done.push([row.id, res]);
       }
+      // erst den neuen Stand sichern, dann antworten – so sieht das Gerät seine Änderung sofort
       await beat();
+      for (const [id, res] of done) await APPX.sb.from('aktionen').update({ result: res }).eq('id', id);
       publishSnap(true);
       render();
     }
@@ -2550,7 +2630,7 @@ async function pollActions() {
   } catch (e) { console.error(e); } finally { NET.actBusy = false; }
 }
 // Die Zentrale nimmt Aufträge der anderen Geräte entgegen
-const LEAD_ONLY = new Set(['create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung', 'clock']);
+const LEAD_ONLY = new Set(['create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung', 'clock', 'erhoehen', 'end', 'status']);
 function doAction(b) {
   const inc = b.incId ? sim.incById(b.incId) : null;
   const needInc = ['nachalarm', 'request', 'retry', 'custom-add', 'custom-set', 'drawings', 'erhoehen', 'end', 'sections', 'log', 'rueckmeldung', 'photo'];
@@ -2579,6 +2659,7 @@ function doAction(b) {
     case 'speed': sim.speed = [1, 2, 5, 10].includes(+b.v) ? +b.v : 1; return { ok: true };
     case 'auto': applyAuto(b); return { ok: true };
     case 'clock': sim.now = Date.now(); sim.speed = 1; return { ok: true };
+    case 'status': { const v = sim.byId(b.vid); if (!v) return { ok: false, error: 'Fahrzeug nicht gefunden' }; return sim.setStatus(v, b.st); }
     case 'reset': sim.reset(); sim.now = Date.now(); sim.lage.drawings = []; return { ok: true };
     case 'photo': {
       if (!/^https:\/\//.test(String(b.data || ''))) return { ok: false, error: 'Foto fehlt' };
@@ -3118,8 +3199,10 @@ function renderDetails() {
   if (!done) {
     act = UI.confirmEnd === inc.id
       ? `<div class="confirm"><b>Einsatz beenden?</b><span>Alle Fahrzeuge melden sich frei und fahren zur Wache.</span><div class="row"><button class="btn sec" data-act="end-no">Abbrechen</button><button class="btn red" data-act="end-yes">Beenden</button></div></div>`
-      : `<button class="btn" data-act="nach">Nachfordern</button><button class="btn sec" data-act="erh">Stufe erhöhen</button><button class="btn sec" data-act="ab-open">Abschnitte</button><button class="btn sec" data-act="end">Beenden</button>`;
-    act += inc.endAt ? `<div class="hint" style="grid-column:1/-1">Geplantes Einsatzende ca. ${fmtT(inc.endAt)} Uhr</div>` : '<div class="hint" style="grid-column:1/-1">Offener Einsatz – wird nur manuell beendet</div>';
+      : CAN_LEAD
+        ? `<button class="btn" data-act="nach">Nachfordern</button><button class="btn sec" data-act="erh">Stufe erhöhen</button><button class="btn sec" data-act="ab-open">Abschnitte</button><button class="btn sec" data-act="end">Beenden</button>`
+        : `<button class="btn" data-act="nach">Nachfordern</button><button class="btn sec" data-act="ab-open">Abschnitte</button>`;
+    if (CAN_LEAD) act += inc.endAt ? `<div class="hint" style="grid-column:1/-1">Geplantes Einsatzende ca. ${fmtT(inc.endAt)} Uhr</div>` : '<div class="hint" style="grid-column:1/-1">Offener Einsatz – wird nur manuell beendet</div>';
   }
   setHTML($('#dAct'), act);
 
@@ -3282,7 +3365,8 @@ function openVehicle(vid) {
     return `<div class="grp2"><div style="display:flex;gap:10px;align-items:center">${stChip(v.status)}<b style="font-size:20px">${esc(v.name)}</b></div>
       <div class="hint">${esc(STATUS_TEXT[v.status])}<br>Standort: ${esc(v.org === 'FF' ? (v.leAddr || sim.byId(v.parent).leAddr) : SITES[v.site].label + ', ' + SITES[v.site].addr)}${v.block ? `<br>Fahrzeuge: ${esc(v.members.join(', '))}` : ''}${v.strength ? `<br>Stärke ${v.strength.text}, ${v.strength.agt} AGT` : ''}${v.hours ? `<br>Dienstzeit ${v.hours[0]}–${v.hours[1]} Uhr` : ''}</div>
       ${inc ? `<div class="hint">Im Einsatz: <b>${esc(inc.title)}</b>, ${esc(inc.addr.street)}</div><button class="btn" data-act="release" data-vid="${v.id}">Freimelden – Status 1</button>` : ''}</div>
-      ${sim.isFree(v) && running.length ? `<div class="grp2"><h5>Einem Einsatz zuweisen</h5><div class="fld"><select id="vaInc">${running.map((i) => `<option value="${i.id}" ${i.id === UI.sel ? 'selected' : ''}>${esc(i.title)} – ${esc(i.addr.street)}</option>`).join('')}</select></div><button class="btn" data-act="assign" data-vid="${v.id}">Anfordern</button></div>` : ''}`;
+      ${sim.isFree(v) && running.length ? `<div class="grp2"><h5>Einem Einsatz zuweisen</h5><div class="fld"><select id="vaInc">${running.map((i) => `<option value="${i.id}" ${i.id === UI.sel ? 'selected' : ''}>${esc(i.title)} – ${esc(i.addr.street)}</option>`).join('')}</select></div><button class="btn" data-act="assign" data-vid="${v.id}">Anfordern</button></div>` : ''}
+      ${CAN_LEAD && !v.carriedBy ? `<div class="grp2"><h5>Status setzen <small>nur Übungsleitung</small></h5><div class="hint">Falls etwas nicht schnell genug geht. Die Übung rechnet ab dem neuen Status normal weiter.</div><div class="stset">${[1, 2, 3, 4, 7, 8, 6].map((s) => `<button class="btn sec sm${String(v.status) === String(s) ? ' on' : ''}" data-act="vst" data-vid="${v.id}" data-st="${s}" title="${esc(STATUS_TEXT[s])}">${stChip(s)}${s}</button>`).join('')}</div></div>` : ''}`;
   };
   openSheet('Fahrzeug', body());
 }
@@ -4618,6 +4702,13 @@ document.addEventListener('click', async (e) => {
     }
     case 'transporte': openTransports(); break;
     case 'em': openVehicle(b.dataset.vid); break;
+    case 'vst': {
+      const v = sim.byId(b.dataset.vid);
+      if (!v || !CAN_LEAD) break;
+      const r = await api.setStatus(v, b.dataset.st);
+      if (r && r.ok) toast(`${v.name}: Status ${b.dataset.st} – ${STATUS_TEXT[b.dataset.st]}`); else if (r && r.error && !REMOTE) toast(r.error);
+      render(true); openVehicle(v.id); break;
+    }
     case 'veh': openVehicle(b.dataset.vid); break;
     case 'release': { const v = sim.byId(b.dataset.vid); if (v.incidentId) await api.release(v); closeSheet(); render(true); break; }
     case 'assign': { const i = sim.incById($('#vaInc').value); const v = sim.byId(b.dataset.vid); if (i && await api.request(i, v.kind === 'FFV' ? null : v.kind, v.id, v.le)) toast(`${v.name} angefordert`); closeSheet(); render(true); break; }
@@ -4633,9 +4724,9 @@ document.addEventListener('click', async (e) => {
     case 'nach-le': if (inc) { const n = +$('#nachLE').value; const ok = await api.request(inc, 'LE', null, n); toast(ok ? `LE ${n} angefordert` : 'Anforderung nicht möglich'); closeSheet(); render(true); } break;
     case 'filter': UI.filter = b.dataset.f; render(true); break;
     case 'nach-veh': if (inc) { const v = sim.byId($('#nachVeh').value); if (await api.request(inc, v.kind, v.id, v.le)) toast(`${v.name} angefordert`); closeSheet(); render(true); } break;
-    case 'erh': openErh(); break;
+    case 'erh': if (CAN_LEAD) openErh(); break;
     case 'erh-go': if (inc) { await api.erhoehen(inc, b.dataset.s); toast(`Alarmstufe auf ${b.dataset.s} erhöht`); closeSheet(); render(true); } break;
-    case 'end': UI.confirmEnd = UI.sel; render(true); break;
+    case 'end': if (CAN_LEAD) { UI.confirmEnd = UI.sel; render(true); } break;
     case 'end-no': UI.confirmEnd = null; render(true); break;
     case 'end-yes': if (inc) await api.end(inc); UI.confirmEnd = null; render(true); break;
     case 'ni-mode': setNiMode(b.dataset.m); break;
