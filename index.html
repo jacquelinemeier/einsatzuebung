@@ -2236,7 +2236,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-17 18:23';
+const APP_VERSION = '2026-11-20 08:13';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -2491,9 +2491,13 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 // Verpasste Zeit nachholen (z. B. nach Neustart oder Ruhezustand), in Schritten, damit Abläufe korrekt weiterlaufen
 function catchUp(realMs) {
   if (!(realMs > 1500)) return;
-  realMs = Math.min(realMs, 24 * 3600e3);
-  const steps = Math.min(400, Math.ceil(realMs / 5000));
-  for (let i = 0; i < steps; i++) sim.tick(realMs / steps);
+  // die letzten Stunden Schritt für Schritt nachrechnen, alles davor auf einmal überspringen
+  const sp = sim.speed || 1;
+  const rest = Math.max(0, realMs - 6 * 3600e3);
+  if (rest) sim.now += rest * sp;
+  const ms = realMs - rest;
+  const steps = Math.min(400, Math.ceil(ms / 5000));
+  for (let i = 0; i < steps; i++) sim.tick(ms / steps);
 }
 function becomeHost() {
   // Uhr auf echte Zeit nachführen: Stand der letzten Sicherung + seitdem vergangene Zeit
@@ -3427,6 +3431,7 @@ function ulExtra() {
     : `<div class="hint">Die Zentrale läuft bei <b>${esc(NET.hostName || 'niemandem')}</b>.${NET.ok ? '' : ' Zurzeit keine Verbindung.'}</div><button class="btn sec" data-act="claim">Zentrale auf diese Seite holen</button>`}</div>` : '';
   const stamm = `<div class="grp2"><h5>Stammdaten</h5><div class="hint">AAO, Wachen, Fahrzeuge, Schlagworte, Adressen und Bereichsfolgen – ${ONLINE ? 'geschützt in Supabase' : 'nur auf diesem Gerät'}${stand}. Nach dem Hochladen einer neuen Datei alle Geräte neu laden.</div>
     <div class="el-row"><button class="btn sm sec" data-act="stamm-dl">Herunterladen</button><label class="btn sm sec filebtn">Neue Datei hochladen<input type="file" id="stammFile" accept=".js,text/javascript,text/plain"></label></div></div>`;
+  const uhr = `<div class="grp2"><h5>Übungsuhr</h5><div class="hint">Läuft normalerweise mit der echten Zeit. Nach Zeitraffer oder wenn sie abweicht: zurück auf die aktuelle Uhrzeit (Tempo 1×).</div><button class="btn sec" data-act="clock-now">Uhr auf jetzt stellen</button></div>`;
   const version = `<div class="hint">Version ${esc(APP_VERSION)}</div>`;
   const konto = ONLINE ? `<div class="grp2"><h5>Angemeldet</h5><div class="hint">${esc(APPX.user.name)} · Übungsleitung</div><button class="btn sec" data-act="logout">Abmelden</button></div>` : '';
   return uhr + zentrale + stamm + konto + version;
