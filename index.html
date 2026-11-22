@@ -1246,6 +1246,27 @@ input, select, textarea { font: inherit; }
 .el-oi { display: inline-grid; place-items: center; width: 28px; height: 26px; }
 .el-oi svg { max-width: 28px; max-height: 24px; }
 .el-act { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.el-time { font-family: var(--mono); font-size: 12.5px; font-weight: 700; background: var(--sunken); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+.el-c.due { background: #fff4e6; box-shadow: inset 3px 0 0 #f08c00; }
+.el-c.due .el-time { background: #f08c00; border-color: #f08c00; color: #fff; }
+.el-due { font-style: normal; font-size: 11.5px; background: #f08c00; color: #fff; border-radius: 99px; padding: 1px 7px; margin-left: auto; }
+.el-due + small { margin-left: 6px !important; }
+.el-own { font-size: 12.5px; padding: 6px 12px; background: #e7f5ff; border-top: 1px solid var(--line); }
+.el-akt { font-size: 12.5px; font-weight: 700; color: var(--accent); background: #edf2ff; border-radius: 6px; padding: 5px 8px; }
+.el-files { display: flex; gap: 6px; flex-wrap: wrap; }
+.el-file { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; background: var(--surface); max-width: 100%; text-align: left; }
+.el-file i, .docthumb i { font-style: normal; font-size: 10px; font-weight: 800; color: #fff; background: #c92a2a; border-radius: 3px; padding: 1px 4px; }
+.el-next { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 13.5px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 8px 10px; }
+.el-next span { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--ink2); }
+.el-next.due { border-color: #f08c00; background: #fff4e6; }
+.el-next.due span { color: #d9480f; }
+.el-next b { font-family: var(--mono); }
+.el-next small { color: var(--ink2); margin-left: auto; }
+.el-row2 { display: grid; grid-template-columns: 120px 1fr; gap: 8px; }
+.chk { display: flex; gap: 8px; align-items: center; font-size: 13.5px; }
+.docthumb { display: grid; place-items: center; gap: 4px; padding: 10px; min-height: 110px; text-align: center; }
+.docthumb i { font-size: 14px; padding: 4px 8px; }
+.docthumb b { font-size: 12.5px; word-break: break-word; }
 .el-act .hint { margin-right: auto; font-size: 12px; }
 .el-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .el-rowh { display: flex; gap: 6px; align-items: center; }
@@ -1901,9 +1922,11 @@ function createSim() {
     const kinds = AAO[inc.stw].slice();
     for (const m of item.minus || []) { const i = kinds.indexOf(m); if (i >= 0) kinds.splice(i, 1); }
     kinds.push(...(item.plus || []));
-    dispatch(inc, kinds, null);
-    const ff = ffKinds(inc, item);
-    if (ff.length) dispatch(inc, ff, 'FF nach AAO');
+    if (!item.nodispatch) {
+      dispatch(inc, kinds, null);
+      const ff = ffKinds(inc, item);
+      if (ff.length) dispatch(inc, ff, 'FF nach AAO');
+    }
     emit('incident', inc);
     return inc;
   }
@@ -2073,7 +2096,7 @@ function createSim() {
     const au = unitOf(inc, v.id); if (au && !au.arrAt) au.arrAt = S.now;
     v.pos = inc.pos.slice();
     v.job = { phase: 'scene' };
-    if (!inc.rd && !inc.lageDone && (v.org === 'FU' || inc.stw === 'TH0' || inc.stw === 'B0')) {
+    if (!inc.rd && !inc.lageDone && !inc.item.quiet && (v.org === 'FU' || inc.stw === 'TH0' || inc.stw === 'B0')) {
       inc.lageDone = true;
       log(inc, 'Lagemeldung: ' + R.pick(inc.item.lage || ['Lage wird erkundet.']), 'lage');
       if (inc.item.mid) inc.midAt = S.now + R.int(8, 18) * 60000;
@@ -2307,7 +2330,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-22 08:46';
+const APP_VERSION = '2026-11-22 09:47';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -2344,10 +2367,10 @@ const FILES = {
   bucket: () => APPX.sb.storage.from('dateien'),
   uid: () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)),
   async toBlob(x) { return typeof x === 'string' ? (await fetch(x)).blob() : x; },
-  async upload(folder, x) {
+  async upload(folder, x, ext) {
     const blob = await this.toBlob(x);
-    const path = `${folder}/${this.uid()}.jpg`;
-    const { error } = await this.bucket().upload(path, blob, { contentType: blob.type || 'image/jpeg', upsert: false });
+    const path = `${folder}/${this.uid()}.${ext || 'jpg'}`;
+    const { error } = await this.bucket().upload(path, blob, { contentType: blob.type || 'application/octet-stream', upsert: false });
     if (error) { console.error(error); return null; }
     return path;
   },
@@ -2365,9 +2388,10 @@ const FILES = {
     return m;
   },
   // Foto für die Ablage: hochladen und einen Link liefern, den alle Angemeldeten öffnen können
-  async uploadAblage(x) { const p = await this.upload('ablage', x); return p ? this.sign(p, 30) : null; },
+  async uploadAblage(x, ext) { const p = await this.upload('ablage', x, ext); return p ? this.sign(p, 30) : null; },
   async copyToAblage(path) {
-    const np = `ablage/${this.uid()}.jpg`;
+    const ext = (String(path).match(/\.([a-z0-9]{2,5})$/i) || [, 'jpg'])[1];
+    const np = `ablage/${this.uid()}.${ext}`;
     const { error } = await this.bucket().copy(path, np);
     if (error) { console.error(error); return null; }
     return this.sign(np, 30);
@@ -2439,7 +2463,7 @@ const api = {
   async create(o) {
     if (!REMOTE) return sim.createIncident(o);
     const idx = o.item ? CATALOG[o.key].items.indexOf(o.item) : -1;
-    const j = await post({ type: 'create', key: o.key, itemIdx: idx < 0 ? null : idx, addr: o.addr, pos: o.pos, duration: o.duration });
+    const j = await post({ type: 'create', key: o.key, itemIdx: idx < 0 ? null : idx, item: idx < 0 && o.item ? o.item : undefined, addr: o.addr, pos: o.pos, duration: o.duration });
     return j.ok ? sim.incById(j.id) : null;
   },
   async nachalarm(inc, kind, vid, le) { return REMOTE ? (await post({ type: 'nachalarm', incId: inc.id, kind, vid, le })).ok : sim.nachalarm(inc, kind, vid, le); },
@@ -2477,19 +2501,30 @@ const api = {
   },
   async setStatus(v, st) { if (REMOTE) return post({ type: 'status', vid: v.id, st }); return sim.setStatus(v, st); },
   async clock() { if (REMOTE) await post({ type: 'clock' }); else { sim.now = Date.now(); sim.speed = 1; } },
-  async reset() { if (REMOTE) await post({ type: 'reset' }); else { sim.reset(); sim.now = Date.now(); } },
-  async photo(inc, data, caption) {
+  async reset() { if (REMOTE) await post({ type: 'reset' }); else { sim.reset(); sim.now = Date.now(); sim.planQ = []; } },
+  async photo(inc, data, caption, meta) {
+    const m = meta && meta.doc ? { doc: true, name: String(meta.name || 'Datei'), mime: String(meta.mime || '') } : null;
     let url = data;
     if (ONLINE && String(data).startsWith('data:')) {
-      url = await FILES.uploadAblage(data);
-      if (!url) { toast('Foto konnte nicht hochgeladen werden'); return false; }
+      url = await FILES.uploadAblage(data, m ? elExt(m.name, m.mime) : 'jpg');
+      if (!url) { toast((m ? 'Datei' : 'Foto') + ' konnte nicht hochgeladen werden'); return false; }
     }
-    if (REMOTE) return (await post({ type: 'photo', incId: inc.id, data: url, caption })).ok;
-    inc.photos.push({ id: String(Date.now()) + rid(), url, caption, t: sim.now });
-    inc.log.push({ t: sim.now, text: 'Neues Foto in der Ablage' + (caption ? ': ' + caption : ''), kind: 'foto' });
+    if (REMOTE) return (await post(Object.assign({ type: 'photo', incId: inc.id, data: url, caption }, m || {}))).ok;
+    inc.photos.push(Object.assign({ id: String(Date.now()) + rid(), url, caption, t: sim.now }, m || {}));
+    inc.log.push({ t: sim.now, text: (m ? 'Neue Datei in der Ablage: ' + m.name : 'Neues Foto in der Ablage') + (caption && (!m || caption !== m.name) ? (m ? ' – ' : ': ') + caption : ''), kind: 'foto' });
     return true;
   },
+  async rdlast(anzahl, minuten) { if (REMOTE) await post({ type: 'rdlast', anzahl, minuten }); else planRd(anzahl, minuten); },
 };
+function cleanItem(it) {
+  if (!it || typeof it !== 'object' || typeof it.sw !== 'string') return undefined;
+  return {
+    sw: it.sw.slice(0, 80), anlass: String(it.anlass || '').slice(0, 300),
+    types: Array.isArray(it.types) ? it.types.slice(0, 5).map(String) : ['G'],
+    plus: Array.isArray(it.plus) ? it.plus.filter((k) => typeof k === 'string').slice(0, 30) : [],
+    quiet: !!it.quiet, nodispatch: !!it.nodispatch,
+  };
+}
 function applyAuto(patch) {
   for (const w of ['fire', 'rd']) {
     const t = sim.auto[w], p = patch[w];
@@ -2507,7 +2542,7 @@ function applySnap(s) {
   if (s.v !== APP_VERSION && !NET.verWarned) { NET.verWarned = true; alertVersion(s.v); }
   if (s.savedAt) { NET.lastSavedAt = Math.max(NET.lastSavedAt || 0, s.savedAt); NET.snapNow = s.now; NET.snapAt = s.savedAt; }
   sim.now = s.now; sim.speed = s.speed; sim.auto = s.auto; sim.nextNr = s.nextNr; sim.routing = s.routing;
-  sim.vehicles = s.vehicles; sim.incidents = s.incidents;
+  sim.vehicles = s.vehicles; sim.incidents = s.incidents; sim.planQ = Array.isArray(s.planQ) ? s.planQ : [];
   sim.reindex();
   if (s.lage && Array.isArray(s.lage.drawings)) sim.lage = s.lage;
   for (const id in NET.pendSec) { const i = sim.incById(id); if (i) i.sections = JSON.parse(JSON.stringify(NET.pendSec[id].d)); }
@@ -2533,7 +2568,7 @@ function alertVersion(other) {
 /* ---------- Zentrale (nur Übungsleitung) ---------- */
 function buildSnap() {
   return {
-    now: sim.now, speed: sim.speed, auto: sim.auto, nextNr: sim.nextNr, routing: sim.routing, lage: sim.lage, incidents: sim.incidents,
+    now: sim.now, speed: sim.speed, auto: sim.auto, nextNr: sim.nextNr, routing: sim.routing, lage: sim.lage, incidents: sim.incidents, planQ: sim.planQ || [],
     // Straßenverläufe bleiben in der Zentrale, die Geräte bekommen nur die Positionen
     vehicles: sim.vehicles.map((v) => (v.job && v.job.path ? Object.assign({}, v, { job: Object.assign({}, v.job, { path: undefined, cum: undefined }) }) : v)),
     savedAt: Date.now(), v: APP_VERSION,
@@ -2634,7 +2669,7 @@ async function pollActions() {
   } catch (e) { console.error(e); } finally { NET.actBusy = false; }
 }
 // Die Zentrale nimmt Aufträge der anderen Geräte entgegen
-const LEAD_ONLY = new Set(['create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung', 'clock', 'erhoehen', 'end', 'status']);
+const LEAD_ONLY = new Set(['create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung', 'clock', 'erhoehen', 'end', 'status', 'rdlast']);
 function doAction(b) {
   const inc = b.incId ? sim.incById(b.incId) : null;
   const needInc = ['nachalarm', 'request', 'retry', 'custom-add', 'custom-set', 'drawings', 'erhoehen', 'end', 'sections', 'log', 'rueckmeldung', 'photo'];
@@ -2643,7 +2678,7 @@ function doAction(b) {
     case 'create': {
       const cat = CATALOG[b.key];
       if (!cat || !b.addr || !Array.isArray(b.pos)) return { ok: false, error: 'Ungültiger Einsatz' };
-      const item = b.itemIdx != null ? cat.items[b.itemIdx] : undefined;
+      const item = b.itemIdx != null ? cat.items[b.itemIdx] : cleanItem(b.item);
       const i = sim.createIncident({ key: b.key, item, addr: b.addr, pos: b.pos, duration: b.duration });
       return { ok: true, id: i.id };
     }
@@ -2664,13 +2699,16 @@ function doAction(b) {
     case 'auto': applyAuto(b); return { ok: true };
     case 'clock': sim.now = Date.now(); sim.speed = 1; return { ok: true };
     case 'status': { const v = sim.byId(b.vid); if (!v) return { ok: false, error: 'Fahrzeug nicht gefunden' }; return sim.setStatus(v, b.st); }
-    case 'reset': sim.reset(); sim.now = Date.now(); sim.lage.drawings = []; return { ok: true };
+    case 'reset': sim.reset(); sim.now = Date.now(); sim.lage.drawings = []; sim.planQ = []; return { ok: true };
     case 'photo': {
-      if (!/^https:\/\//.test(String(b.data || ''))) return { ok: false, error: 'Foto fehlt' };
-      inc.photos.push({ id: String(Date.now()) + rid(), url: String(b.data), caption: String(b.caption || ''), t: sim.now });
-      inc.log.push({ t: sim.now, text: 'Neues Foto in der Ablage' + (b.caption ? ': ' + b.caption : ''), kind: 'foto' });
+      if (!/^https:\/\//.test(String(b.data || ''))) return { ok: false, error: 'Datei fehlt' };
+      const m = b.doc ? { doc: true, name: String(b.name || 'Datei').slice(0, 200), mime: String(b.mime || '').slice(0, 100) } : {};
+      const cap = String(b.caption || '');
+      inc.photos.push(Object.assign({ id: String(Date.now()) + rid(), url: String(b.data), caption: cap, t: sim.now }, m));
+      inc.log.push({ t: sim.now, text: (b.doc ? 'Neue Datei in der Ablage: ' + m.name : 'Neues Foto in der Ablage') + (cap && (!b.doc || cap !== m.name) ? (b.doc ? ' – ' : ': ') + cap : ''), kind: 'foto' });
       return { ok: true };
     }
+    case 'rdlast': planRd(Math.max(1, Math.min(60, +b.anzahl || 1)), Math.max(0, Math.min(240, +b.minuten || 0))); return { ok: true };
   }
   return { ok: false, error: 'Unbekannter Auftrag' };
 }
@@ -3332,8 +3370,10 @@ function openAblage() {
     const inc = sim.incById(id);
     const ph = inc.photos || [];
     return ph.length
-      ? `<div class="hint">${esc(inc.title)} · ${esc(inc.addr.street)}</div><div class="gallery">${ph.slice().reverse().map((p) => `<button data-act="foto-big" data-url="${esc(p.url)}" data-cap="${esc(p.caption)}"><img src="${esc(p.url)}" alt="${esc(p.caption || 'Foto')}"><span>${fmtT(p.t)}${p.caption ? ' · ' + esc(p.caption) : ''}</span></button>`).join('')}</div>`
-      : '<div class="hint">Noch keine Fotos zu diesem Einsatz. Die Übungsleitung kann Fotos einspielen.</div>';
+      ? `<div class="hint">${esc(inc.title)} · ${esc(inc.addr.street)}</div><div class="gallery">${ph.slice().reverse().map((p) => p.doc
+        ? `<button class="docthumb" data-act="doc-open" data-url="${esc(p.url)}" data-name="${esc(p.name)}"><i>${docIcon(p.name, p.mime)}</i><b>${esc(p.name)}</b><span>${fmtT(p.t)}</span></button>`
+        : `<button data-act="foto-big" data-url="${esc(p.url)}" data-cap="${esc(p.caption)}"><img src="${esc(p.url)}" alt="${esc(p.caption || 'Foto')}"><span>${fmtT(p.t)}${p.caption ? ' · ' + esc(p.caption) : ''}</span></button>`).join('')}</div>`
+      : '<div class="hint">Noch keine Fotos oder Dateien zu diesem Einsatz.</div>';
   };
   openSheet('Ablage', body(), { live: () => setHTML($('#sheetBody'), body()) });
 }
@@ -3445,7 +3485,8 @@ function setNiMode(m) {
 async function submitNew() {
   const key = $('#niKey').value;
   const iv = $('#niItem').value;
-  const item = iv === '' ? null : CATALOG[key].items[+iv];
+  const ovr = UI.niOverride; UI.niOverride = null;
+  const item = ovr ? ovr.item : iv === '' ? null : CATALOG[key].items[+iv];
   const dsel = $('#niDur').value;
   const duration = dsel === 'open' ? 'open' : dsel === 'min' ? Math.max(1, +$('#niMin').value || 30) : 'auto';
   const o = { key, item, duration, select: true };
@@ -3467,10 +3508,13 @@ async function submitNew() {
       o.addr = { street, plz, district: '', type: 'W', object: '' };
     } else { toast('Bitte Adresse eingeben oder Ort auf der Karte wählen.'); return; }
   }
+  if (ovr && o.addr && ovr.object) o.addr.object = ovr.object;
   closeSheet();
   if (UI.view !== 'details') setView('details');
   const inc = await newIncident(o);
+  if (!inc) return;
   toast(`${inc.title} alarmiert – ${inc.addr.street}`);
+  if (ovr && ovr.after) ovr.after(inc);
 }
 
 function openUL() {
@@ -4211,7 +4255,10 @@ const ELDB_LOCAL = {
 // Online: Szenarien je Zeile in Supabase (nur Übungsleitung), Bilder im Storage-Ordner „einlagen“
 function elStorable(s) {
   const c = JSON.parse(JSON.stringify(s));
-  for (const r of c.reiter) for (const e of r.einlagen) e.bilder = e.bilder.map((b) => (b.path ? { id: b.id, path: b.path, cap: b.cap } : b));
+  for (const r of c.reiter) for (const e of r.einlagen) {
+    e.bilder = e.bilder.map((b) => (b.path ? { id: b.id, path: b.path, cap: b.cap } : b));
+    e.dateien = (e.dateien || []).map((d) => (d.path ? { id: d.id, path: d.path, name: d.name, mime: d.mime } : d));
+  }
   return c;
 }
 const ELDB_ONLINE = {
@@ -4260,7 +4307,7 @@ const ELDB = ONLINE ? ELDB_ONLINE : ELDB_LOCAL;
 // Bilder aus dem Storage für die Anzeige freischalten (Links gelten einige Stunden)
 async function elSignAll() {
   const imgs = [];
-  for (const s of EL.list) for (const r of s.reiter) for (const e of r.einlagen) for (const b of e.bilder) if (b.path && !String(b.data || '').startsWith('data:')) imgs.push(b);
+  for (const s of EL.list) for (const r of s.reiter) for (const e of r.einlagen) for (const b of e.bilder.concat(e.dateien || [])) if (b.path && !String(b.data || '').startsWith('data:')) imgs.push(b);
   if (!imgs.length) { EL.signedAt = Date.now(); return; }
   const m = await FILES.signMany([...new Set(imgs.map((b) => b.path))], 0.5);
   for (const b of imgs) if (m[b.path]) b.data = m[b.path];
@@ -4269,22 +4316,183 @@ async function elSignAll() {
 // Importierte Bilder (in der Datei enthalten) in den Storage hochladen
 async function elUploadImages(s) {
   const todo = [];
-  for (const r of s.reiter) for (const e of r.einlagen) for (const b of e.bilder) if (!b.path && String(b.data || '').startsWith('data:')) todo.push(b);
+  for (const r of s.reiter) for (const e of r.einlagen) for (const b of e.bilder.concat(e.dateien || [])) if (!b.path && String(b.data || '').startsWith('data:')) todo.push(b);
   if (!todo.length) return;
-  toast(`${todo.length} Bild${todo.length > 1 ? 'er werden' : ' wird'} hochgeladen …`);
-  for (const b of todo) { const p = await FILES.upload('einlagen', b.data); if (p) b.path = p; }
+  toast(`${todo.length} Anlage${todo.length > 1 ? 'n werden' : ' wird'} hochgeladen …`);
+  let fail = 0;
+  for (const b of todo) { const p = await FILES.upload('einlagen', b.data, b.name ? elExt(b.name, b.mime) : 'jpg'); if (p) b.path = p; else fail++; }
+  if (fail) toast(`${fail} Anlage${fail > 1 ? 'n' : ''} konnte${fail > 1 ? 'n' : ''} nicht hochgeladen werden`);
 }
 // Für den Export: Bilder als Daten in die Datei schreiben, damit sie auch am Einzelplatz funktioniert
 async function elExportable(s) {
   const c = JSON.parse(JSON.stringify(s));
-  for (const r of c.reiter) for (const e of r.einlagen) for (const b of e.bilder) {
+  for (const r of c.reiter) for (const e of r.einlagen) for (const b of e.bilder.concat(e.dateien || [])) {
     if (!b.path) continue;
     if (!String(b.data || '').startsWith('data:')) { try { b.data = await FILES.toDataUrl(b.data || (await FILES.sign(b.path, 0.1))); } catch (err) { b.data = ''; } }
     delete b.path;
   }
-  for (const r of c.reiter) for (const e of r.einlagen) e.bilder = e.bilder.filter((b) => String(b.data || '').startsWith('data:'));
+  for (const r of c.reiter) for (const e of r.einlagen) { e.bilder = e.bilder.filter((b) => String(b.data || '').startsWith('data:')); e.dateien = (e.dateien || []).filter((b) => String(b.data || '').startsWith('data:')); }
   return c;
 }
+
+/* ---------- Einlagen: Zeit, Empfänger, Anlagen, Aktionen ---------- */
+const EL_EXT = { pdf: 'pdf', 'application/pdf': 'pdf', xlsx: 'xlsx', docx: 'docx', png: 'png', jpg: 'jpg', jpeg: 'jpg' };
+function elExt(name, mime) {
+  const m = String(name || '').toLowerCase().match(/\.([a-z0-9]{2,5})$/);
+  if (m) return m[1];
+  if (/pdf/.test(mime)) return 'pdf';
+  if (/sheet|excel/.test(mime)) return 'xlsx';
+  if (/word/.test(mime)) return 'docx';
+  if (/png/.test(mime)) return 'png';
+  return 'bin';
+}
+const nowHM = () => { const d = new Date(sim.now); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+function elNormZeit(z) {
+  const m = String(z || '').trim().match(/^(\d{1,2}):(\d{2})/);
+  return m ? m[1].padStart(2, '0') + ':' + m[2] : '';
+}
+function elNormAktion(a) {
+  if (!a || typeof a !== 'object') return null;
+  if (a.typ === 'einsatz' && CATALOG[a.key]) {
+    return {
+      typ: 'einsatz', key: a.key, sw: String(a.sw || ''), anlass: String(a.anlass || ''),
+      strasse: String(a.strasse || ''), plz: String(a.plz || ''), objekt: String(a.objekt || ''), geo: String(a.geo || ''),
+      site: a.site && SITES[a.site] ? a.site : '', plus: Array.isArray(a.plus) ? a.plus.map(String).filter(Boolean) : [],
+      ohneAlarm: !!a.ohneAlarm, standard: !!a.standard, dauer: a.dauer === 'auto' ? 'auto' : 'open',
+      ...(Array.isArray(a.pos) && a.pos.length === 2 && a.pos.every((n) => isFinite(n)) ? { pos: a.pos.map(Number) } : {}),
+    };
+  }
+  if (a.typ === 'nachalarm') return { typ: 'nachalarm', kinds: (Array.isArray(a.kinds) ? a.kinds : []).map(String).filter(Boolean) };
+  if (a.typ === 'erhoehen' && a.stw) return { typ: 'erhoehen', stw: String(a.stw) };
+  if (a.typ === 'rdlast') return { typ: 'rdlast', anzahl: Math.max(1, Math.min(60, Math.round(+a.anzahl) || 10)), minuten: Math.max(0, Math.min(240, Math.round(+a.minuten) || 0)) };
+  return null;
+}
+function elNormDateien(arr) {
+  return (arr || []).filter((d) => d && ((typeof d.data === 'string' && d.data.startsWith('data:')) || typeof d.path === 'string')).map((d) => {
+    const o = { id: d.id || elId('D'), name: String(d.name || 'Datei'), mime: String(d.mime || '') };
+    if (d.path) o.path = d.path;
+    if (d.data) o.data = d.data;
+    return o;
+  });
+}
+function kindsSummary(kinds) {
+  const c = {};
+  for (const k of kinds) c[k] = (c[k] || 0) + 1;
+  return Object.entries(c).map(([k, n]) => `${n > 1 ? n + '× ' : ''}${KIND_LABEL[k] || k}`).join(', ');
+}
+function elAktionText(a) {
+  if (!a) return '';
+  if (a.typ === 'einsatz') return a.ohneAlarm ? `Lage anlegen: ${a.sw || 'Stabslage'}` : `Einsatz anlegen: ${CATALOG[a.key].stw}-${a.sw || '…'}${a.strasse ? ' · ' + a.strasse : ''}`;
+  if (a.typ === 'nachalarm') return `Nachalarmieren: ${kindsSummary(a.kinds) || '–'}`;
+  if (a.typ === 'erhoehen') return `Stufe erhöhen auf ${a.stw}`;
+  if (a.typ === 'rdlast') return `RD-Last: ${a.anzahl} RD-Einsätze${a.minuten ? ` über ${a.minuten} Min.` : ' sofort'}`;
+  return '';
+}
+// Einsatz, der zu dieser Einlage gehört: zuerst der des eigenen Reiters (Set), sonst die Standard-Lage des Szenarios
+function elIncFor(s, r) {
+  const fromE = (x) => {
+    if (!x.aktion || x.aktion.typ !== 'einsatz') return null;
+    const d = elDone(s.id, x.id);
+    for (let i = d.length - 1; i >= 0; i--) { const inc = sim.incById(d[i].inc); if (inc && inc.status === 'laufend') return inc.id; }
+    return null;
+  };
+  if (r) for (const x of r.einlagen) { const id = fromE(x); if (id) return id; }
+  for (const rr of s.reiter) for (const x of rr.einlagen) if (x.aktion && x.aktion.standard) { const id = fromE(x); if (id) return id; }
+  return null;
+}
+function elTargetFor(s, r) {
+  const own = elIncFor(s, r);
+  if (own) return own;
+  const t = sim.incById(EL.target);
+  return t && t.status === 'laufend' ? t.id : null;
+}
+// Einsatz aus einer Einlage anlegen. Gibt den neuen Einsatz zurück oder null (dann ist der Dialog offen)
+// Ohne Internet-Adresssuche: Straße in den hinterlegten Adressen/Kliniken suchen (nächste Hausnummer)
+function elLocalPos(q, plz) {
+  const norm = (x) => String(x || '').toLowerCase().replace(/ß/g, 'ss').replace(/str(\.|asse)\b/g, 'str').replace(/[^a-zäöü0-9]/g, '');
+  const m = String(q).split(/[\/,]/)[0].trim().match(/^(.*?)(?:\s+(\d+)\s*[a-z]?)?$/i);
+  const want = norm(m ? m[1] : q), nr = m && m[2] ? +m[2] : 0;
+  let best = null;
+  const cand = [];
+  for (const x of (typeof ALL_ADDR !== 'undefined' ? ALL_ADDR : [])) cand.push([x.street, x.pos]);
+  for (const h of (typeof HOSPITALS !== 'undefined' ? HOSPITALS : [])) cand.push([String(h.addr).split(',')[0], h.pos]);
+  for (const [street, pos] of cand) {
+    const sm = String(street || '').match(/^(.*?)(?:\s+(\d+)\s*[a-z]?)?$/i);
+    if (!sm || norm(sm[1]) !== want || !Array.isArray(pos)) continue;
+    const d = Math.abs((sm[2] ? +sm[2] : 0) - nr);
+    if (!best || d < best.d) best = { d, pos };
+  }
+  return best ? best.pos.slice() : null;
+}
+async function elCreateIncident(a, after) {
+  const cat = CATALOG[a.key];
+  const item = { sw: a.sw || cat.items[0].sw, anlass: a.anlass || a.sw || '', types: ['G'], plus: a.plus || [], quiet: true, nodispatch: !!a.ohneAlarm };
+  let pos = null, addr = null;
+  if (a.site && SITES[a.site]) {
+    const st = SITES[a.site];
+    pos = st.pos.slice();
+    const m = String(st.addr).match(/^(.*?),\s*(\d{5})/);
+    addr = { street: a.strasse || (m ? m[1] : st.addr), plz: a.plz || (m ? m[2] : ''), district: '', type: 'G', object: a.objekt || st.label };
+  } else {
+    const q = a.geo || a.strasse;
+    pos = Array.isArray(a.pos) && a.pos.length === 2 ? a.pos.slice() : null;
+    if (!pos && q) pos = await geocodeAddress(q, a.plz, 6000);
+    if (!pos && q) pos = elLocalPos(q, a.plz);
+    addr = { street: a.strasse || q || 'Einsatzort', plz: a.plz || '', district: '', type: 'G', object: a.objekt || '' };
+  }
+  if (!pos) {
+    // Adresse nicht gefunden: Dialog mit allen Angaben öffnen, Ort auf der Karte antippen
+    toast('Adresse nicht automatisch gefunden – bitte im Dialog den Ort auf der Karte antippen.');
+    openNew();
+    $('#niKey').value = a.key; fillItems();
+    setNiMode('free');
+    $('#niFree').value = [a.strasse, a.plz].filter(Boolean).join(', ');
+    $('#niDur').value = a.dauer === 'auto' ? 'auto' : 'open';
+    UI.niOverride = { item, object: addr.object, after };
+    const h = document.createElement('div'); h.className = 'el-warn'; h.textContent = `Aus Einlage: ${cat.stw}-${item.sw}${addr.object ? ' · ' + addr.object : ''}`;
+    $('#sheetBody').prepend(h);
+    return null;
+  }
+  return newIncident({ key: a.key, item, addr, pos, duration: a.dauer === 'auto' ? 'auto' : 'open', select: true });
+}
+// Datei oder Bild öffnen (auch Daten-Links am Einzelplatz)
+async function openDoc(url, name) {
+  try {
+    if (String(url).startsWith('data:')) {
+      const blob = await (await fetch(url)).blob();
+      url = URL.createObjectURL(blob);
+    }
+    const w = window.open(url, '_blank', 'noopener');
+    if (!w) { const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.download = name || ''; document.body.appendChild(a); a.click(); a.remove(); }
+  } catch (e) { toast('Datei konnte nicht geöffnet werden'); }
+}
+function docIcon(name, mime) {
+  const x = elExt(name, mime);
+  return x === 'pdf' ? 'PDF' : x === 'xlsx' || x === 'xls' || x === 'csv' ? 'XLS' : x === 'docx' || x === 'doc' ? 'DOC' : 'DATEI';
+}
+// RD-Last: geplante RD-Einsätze (nur die Zentrale arbeitet sie ab)
+function planRd(anzahl, minuten) {
+  sim.planQ = sim.planQ || [];
+  const span = Math.max(0, minuten) * 60000;
+  for (let i = 0; i < anzahl; i++) {
+    const at = sim.now + (anzahl > 1 ? (span * i) / (anzahl - 1) : 0) + (i ? Math.round((Math.random() - 0.5) * 60000) : 0);
+    sim.planQ.push({ at: Math.max(sim.now, at), key: R.pick(['R10', 'R10', 'R10', 'R11', 'R11']) });
+  }
+  sim.planQ.sort((a, b) => a.at - b.at);
+}
+let planBusy = false;
+async function processPlan() {
+  const q = sim.planQ || [];
+  if (planBusy || !q.length || q[0].at > sim.now) return;
+  planBusy = true;
+  try {
+    while ((sim.planQ || []).length && sim.planQ[0].at <= sim.now) {
+      const d = sim.planQ.shift();
+      if (CATALOG[d.key]) await Promise.race([newIncident({ key: d.key }).catch((e) => console.error(e)), new Promise((r) => setTimeout(r, 10000))]);
+    }
+  } finally { planBusy = false; }
+}
+
 const EL = { list: [], cur: null, done: {}, mode: 'play', edit: null, open: new Set(), target: null, objTarget: store.get('el-objtarget', '__lage'), loaded: null, saveT: null, confirm: null, busy: null };
 const elId = (p) => p + Date.now().toString(36).slice(-6) + Math.random().toString(36).slice(2, 5);
 const elScen = () => EL.list.find((s) => s.id === EL.cur) || EL.list[0] || null;
@@ -4303,9 +4511,12 @@ function elNormalize(s) {
   const o = { id: s.id || elId('S'), name: String(s.name || 'Szenario'), beschreibung: String(s.beschreibung || ''), reiter: [] };
   for (const r of s.reiter || []) {
     o.reiter.push({ id: r.id || elId('R'), name: String(r.name || 'Reiter'), einlagen: (r.einlagen || []).map((e) => ({
-      id: e.id || elId('E'), titel: String(e.titel || ''), absender: String(e.absender || ''), text: String(e.text || ''), notiz: String(e.notiz || ''),
+      id: e.id || elId('E'), titel: String(e.titel || ''), zeit: elNormZeit(e.zeit), absender: String(e.absender || ''), an: String(e.an || ''),
+      text: String(e.text || ''), notiz: String(e.notiz || ''),
       bilder: (e.bilder || []).filter((b) => b && ((typeof b.data === 'string' && b.data.startsWith('data:image')) || typeof b.path === 'string')).map((b) => { const o = { id: b.id || elId('B'), cap: String(b.cap || '') }; if (b.path) o.path = b.path; if (b.data) o.data = b.data; return o; }),
+      dateien: elNormDateien(e.dateien),
       objekte: (e.objekte || []).filter((d) => d && d.c && ['p', 'l', 'f'].includes(d.g)),
+      aktion: elNormAktion(e.aktion),
     })) });
   }
   return o;
@@ -4369,31 +4580,54 @@ function elPlayView(s, run) {
   const all = s.reiter.reduce((n, r) => n + r.einlagen.length, 0);
   const done = s.reiter.reduce((n, r) => n + r.einlagen.filter((e) => elDone(s.id, e.id).length).length, 0);
   const tgt = (run.length
-    ? `<div class="fld el-tgt"><label for="elInc">Meldungen und Bilder in</label><select id="elInc">${run.map((i) => `<option value="${i.id}" ${i.id === EL.target ? 'selected' : ''}>${esc(i.title)} – ${esc(i.addr.street)}</option>`).join('')}</select></div>`
-    : '<div class="el-warn">Kein laufender Einsatz. Meldungen und Bilder brauchen einen Einsatz (z. B. die Stabslage). Einlagen, die nur Kartenobjekte enthalten, gehen auch ohne.</div>') +
-    `<div class="fld el-tgt"><label for="elObjT">Kartenobjekte in</label><select id="elObjT"><option value="${LAGE_ID}" ${EL.objTarget === LAGE_ID ? 'selected' : ''}>Lagekarte (Gesamtlage)</option><option value="inc" ${EL.objTarget !== LAGE_ID ? 'selected' : ''}>Lagekarte des gewählten Einsatzes</option></select></div>`;
-  const prog = `<div class="el-prog"><span>${done} von ${all} eingespielt</span><i style="--p:${all ? Math.round(done / all * 100) : 0}%"></i></div>`;
+    ? `<div class="fld el-tgt"><label for="elInc">Meldungen ohne eigenen Einsatz in</label><select id="elInc">${run.map((i) => `<option value="${i.id}" ${i.id === EL.target ? 'selected' : ''}>${esc(i.title)} – ${esc(i.addr.street)}</option>`).join('')}</select></div>`
+    : '<div class="el-warn">Noch kein laufender Einsatz. Einlagen mit „Einsatz anlegen“ bzw. „Lage anlegen“ legen ihn selbst an; reine Meldungen brauchen einen laufenden Einsatz.</div>') +
+    `<div class="fld el-tgt"><label for="elObjT">Kartenobjekte in</label><select id="elObjT"><option value="${LAGE_ID}" ${EL.objTarget === LAGE_ID ? 'selected' : ''}>Lagekarte (Gesamtlage)</option><option value="inc" ${EL.objTarget !== LAGE_ID ? 'selected' : ''}>Lagekarte des Einsatzes</option></select></div>`;
+  // nächste fällige Einlage
+  const hm = nowHM();
+  let next = null;
+  for (const r of s.reiter) for (const e of r.einlagen) if (e.zeit && !elDone(s.id, e.id).length && (!next || e.zeit < next.e.zeit)) next = { r, e };
+  const nextH = next ? `<div class="el-next ${next.e.zeit <= hm ? 'due' : ''}"><span>${next.e.zeit <= hm ? 'Fällig' : 'Als Nächstes'}</span><b>${esc(next.e.zeit)}</b> ${esc(next.e.titel || next.e.text.slice(0, 60))}<small>${esc(next.r.name)}</small></div>` : '';
+  const prog = `<div class="el-prog"><span>${done} von ${all} erledigt</span><i style="--p:${all ? Math.round(done / all * 100) : 0}%"></i></div>`;
   const desc = s.beschreibung ? `<div class="hint">${esc(s.beschreibung)}</div>` : '';
   const reiter = s.reiter.map((r, ri) => {
     const n = r.einlagen.filter((e) => elDone(s.id, e.id).length).length;
+    const due = r.einlagen.filter((e) => e.zeit && e.zeit <= hm && !elDone(s.id, e.id).length).length;
     const open = EL.open.has(r.id) || (EL.open.size === 0 && ri === 0);
-    return `<details class="el-r" data-rid="${r.id}" ${open ? 'open' : ''}><summary><span>${esc(r.name)}</span><small class="${n === r.einlagen.length && n ? 'all' : ''}">${n}/${r.einlagen.length}</small></summary>
-      ${r.einlagen.length ? r.einlagen.map((e, ei) => elCard(s, e, `${ri + 1}.${ei + 1}`, !!run.length || (EL.objTarget === LAGE_ID && !e.text && !e.bilder.length && e.objekte.length > 0))).join('') : '<div class="hint" style="padding:8px 12px">Keine Einlagen in diesem Reiter.</div>'}</details>`;
+    const own = elIncFor(s, r);
+    const ownInc = own && sim.incById(own);
+    return `<details class="el-r" data-rid="${r.id}" ${open ? 'open' : ''}><summary><span>${esc(r.name)}</span>${due ? `<em class="el-due">${due} fällig</em>` : ''}<small class="${n === r.einlagen.length && n ? 'all' : ''}">${n}/${r.einlagen.length}</small></summary>
+      ${ownInc ? `<div class="el-own">Einsatz dieses Reiters: <b>${esc(ownInc.title)}</b> – ${esc(ownInc.addr.street)}</div>` : ''}
+      ${r.einlagen.length ? r.einlagen.map((e, ei) => elCard(s, r, e, `${ri + 1}.${ei + 1}`, run)).join('') : '<div class="hint" style="padding:8px 12px">Keine Einlagen in diesem Reiter.</div>'}</details>`;
   }).join('');
-  return tgt + prog + desc + (reiter || '<div class="hint">Dieses Szenario hat noch keine Reiter. Über „Bearbeiten“ anlegen.</div>');
+  return tgt + nextH + prog + desc + (reiter || '<div class="hint">Dieses Szenario hat noch keine Reiter. Über „Bearbeiten“ anlegen.</div>');
 }
-function elCard(s, e, no, can) {
+function elCard(s, r, e, no, run) {
   const d = elDone(s.id, e.id);
   const last = d[d.length - 1];
   const busy = EL.busy === e.id;
-  return `<div class="el-c ${d.length ? 'done' : ''}">
-    <div class="el-ch"><span class="el-no">${no}</span><b>${esc(e.titel || '(ohne Titel)')}</b>${last ? `<span class="el-ok" title="${esc(d.map((x) => fmtT(x.t) + ' → ' + x.title).join('\n'))}">✓ ${fmtT(last.t)}${d.length > 1 ? ' ×' + d.length : ''}</span>` : ''}</div>
-    ${e.absender ? `<div class="el-from">von ${esc(e.absender)}</div>` : ''}
+  const a = e.aktion;
+  const due = !d.length && e.zeit && e.zeit <= nowHM();
+  const tgtId = elTargetFor(s, r);
+  const tgt = tgtId && sim.incById(tgtId);
+  const makesInc = a && a.typ === 'einsatz';
+  const hasMsg = !!(e.text || e.bilder.length || e.dateien.length);
+  const needInc = !makesInc && (hasMsg || (a && (a.typ === 'nachalarm' || a.typ === 'erhoehen')) || (e.objekte.length && EL.objTarget !== LAGE_ID));
+  const can = !busy && (!needInc || !!tgt);
+  const where = makesInc ? (a.ohneAlarm ? 'legt die Lage an' : 'legt den Einsatz an') : tgt ? `→ ${tgt.title}` : needInc ? 'kein Ziel-Einsatz' : '';
+  const doneTxt = last ? (last.skip ? `✓ abgehakt ${fmtT(last.t)}` : `✓ ${fmtT(last.t)}${d.length > 1 ? ' ×' + d.length : ''}`) : '';
+  return `<div class="el-c ${d.length ? 'done' : ''} ${due ? 'due' : ''}">
+    <div class="el-ch"><span class="el-no">${no}</span>${e.zeit ? `<span class="el-time">${esc(e.zeit)}</span>` : ''}<b>${esc(e.titel || '(ohne Titel)')}</b>${last ? `<span class="el-ok" title="${esc(d.map((x) => fmtT(x.t) + ' → ' + x.title).join('\n'))}">${doneTxt}</span>` : ''}</div>
+    ${e.absender || e.an ? `<div class="el-from">${e.absender ? 'von ' + esc(e.absender) : ''}${e.an ? ' an ' + esc(e.an) : ''}</div>` : ''}
     ${e.text ? `<div class="el-text">${esc(e.text)}</div>` : ''}
     ${e.notiz ? `<div class="el-note"><b>Leitung:</b> ${esc(e.notiz)}</div>` : ''}
     ${e.bilder.length ? `<div class="el-imgs">${e.bilder.map((b) => `<button data-act="foto-big" data-url="${esc(b.data)}" data-cap="${esc(b.cap)}"><img src="${esc(b.data)}" alt="${esc(b.cap || 'Bild')}"></button>`).join('')}</div>` : ''}
+    ${e.dateien.length ? `<div class="el-files">${e.dateien.map((f) => `<button class="el-file" data-act="doc-open" data-url="${esc(f.data || '')}" data-name="${esc(f.name)}" ${f.data ? '' : 'disabled'}><i>${docIcon(f.name, f.mime)}</i>${esc(f.name)}</button>`).join('')}</div>` : ''}
     ${e.objekte.length ? `<div class="el-obj">${elObjIcons(e.objekte)}<span>${e.objekte.length} Objekt${e.objekte.length === 1 ? '' : 'e'} für die ${EL.objTarget === LAGE_ID ? 'Gesamtlage' : 'Lagekarte des Einsatzes'}</span></div>` : ''}
-    <div class="el-act">${last ? `<span class="hint">zuletzt in ${esc(last.title)}</span>` : ''}<button class="btn sm ${d.length ? 'sec' : ''}" data-act="el-play" data-id="${e.id}" ${can && !busy ? '' : 'disabled'}>${busy ? 'Wird eingespielt …' : d.length ? 'Erneut einspielen' : 'Einspielen'}</button></div>
+    ${a ? `<div class="el-akt">${esc(elAktionText(a))}</div>` : ''}
+    <div class="el-act"><span class="hint">${esc(where)}</span>
+      ${d.length ? `<button class="btn sm sec" data-act="el-undo" data-id="${e.id}" title="Als offen markieren">↺</button>` : `<button class="btn sm sec" data-act="el-check" data-id="${e.id}" title="Ohne Einspielen als erledigt markieren">Abhaken</button>`}
+      <button class="btn sm ${d.length ? 'sec' : ''}" data-act="el-play" data-id="${e.id}" ${can ? '' : 'disabled'}>${busy ? 'Wird eingespielt …' : d.length ? 'Erneut einspielen' : 'Einspielen'}</button></div>
   </div>`;
 }
 function elEditScen(s) {
@@ -4424,6 +4658,32 @@ function elEditScen(s) {
       <button class="btn sm sec" data-act="el-eadd" data-rid="${r.id}">+ Einlage</button></div>`).join('');
   return scen + reiter + '<button class="btn sec" data-act="el-radd">+ Reiter</button>';
 }
+function elAktionEditor(e) {
+  const a = e.aktion || {};
+  const typ = e.aktion ? a.typ : '';
+  let f = '';
+  if (typ === 'einsatz') {
+    f = `<div class="fld"><label for="elAKey">Stichwort-Gruppe</label><select id="elAKey">${Object.keys(CATALOG).map((k) => `<option value="${k}" ${k === a.key ? 'selected' : ''}>${esc(KEY_LABEL[k])}</option>`).join('')}</select></div>
+      <div class="fld"><label for="elASw">Schlagwort <small>(z. B. VU LKW)</small></label><input type="text" id="elASw" value="${esc(a.sw)}" autocomplete="off"></div>
+      <div class="fld"><label for="elAAnl">Einsatzanlass</label><input type="text" id="elAAnl" value="${esc(a.anlass)}" autocomplete="off"></div>
+      <div class="fld"><label for="elAStr">Adresse</label><input type="text" id="elAStr" value="${esc(a.strasse)}" placeholder="z. B. Obere Stahlindustrie 8" autocomplete="off"></div>
+      <div class="fld"><label for="elAPlz">PLZ <small>(optional)</small></label><input type="text" id="elAPlz" value="${esc(a.plz)}" autocomplete="off"></div>
+      <div class="fld"><label for="elAObj">Objekt / Zusatz <small>(optional)</small></label><input type="text" id="elAObj" value="${esc(a.objekt)}" autocomplete="off"></div>
+      <div class="fld"><label for="elAPlus">Zusätzlich alarmieren <small>(Kürzel, mit Komma, optional)</small></label><input type="text" id="elAPlus" value="${esc((a.plus || []).join(', '))}" placeholder="z. B. GWAS, RTW" autocomplete="off"></div>
+      <label class="chk"><input type="checkbox" id="elAOhne" ${a.ohneAlarm ? 'checked' : ''}> ohne Alarmierung (z. B. Stabslage)</label>
+      <label class="chk"><input type="checkbox" id="elAStd" ${a.standard ? 'checked' : ''}> Ziel für alle Meldungen ohne eigenen Einsatz</label>`;
+  } else if (typ === 'nachalarm') {
+    f = `<div class="fld"><label for="elAKinds">Fahrzeuge <small>(Kürzel, mehrfach möglich: RTW, RTW, NEF …)</small></label><input type="text" id="elAKinds" value="${esc(a.kinds.join(', '))}" autocomplete="off"></div>
+      <div class="hint">Kürzel: ${Object.keys(KIND_LABEL).filter((k) => !/^WLF:|^LE$/.test(k)).map(esc).join(', ')}</div>`;
+  } else if (typ === 'erhoehen') {
+    f = `<div class="fld"><label for="elAStw">Neue Stufe</label><select id="elAStw">${Object.keys(AAO).map((k) => `<option ${k === a.stw ? 'selected' : ''}>${k}</option>`).join('')}</select></div>`;
+  } else if (typ === 'rdlast') {
+    f = `<div class="fld"><label for="elAAnz">Anzahl RD-Einsätze</label><input type="number" id="elAAnz" min="1" max="60" value="${a.anzahl}"></div>
+      <div class="fld"><label for="elAMin">verteilt über Minuten <small>(0 = sofort)</small></label><input type="number" id="elAMin" min="0" max="240" value="${a.minuten}"></div>`;
+  }
+  return `<div class="grp2"><h5>Aktion beim Einspielen</h5>
+    <div class="fld"><select id="elATyp"><option value="">keine – nur Meldung</option><option value="einsatz" ${typ === 'einsatz' ? 'selected' : ''}>Einsatz anlegen</option><option value="nachalarm" ${typ === 'nachalarm' ? 'selected' : ''}>Fahrzeuge nachalarmieren</option><option value="erhoehen" ${typ === 'erhoehen' ? 'selected' : ''}>Stufe erhöhen</option><option value="rdlast" ${typ === 'rdlast' ? 'selected' : ''}>RD-Last (viele RD-Einsätze)</option></select></div>${f}</div>`;
+}
 function elEditor(f) {
   const { s, e } = f;
   const run = [...(LAGE.drawings.length ? [LAGE] : []), ...sim.incidents.filter((i) => (i.drawings || []).length)];
@@ -4431,16 +4691,22 @@ function elEditor(f) {
   return `<button class="btn sm sec el-back" data-act="el-back">← Zurück zum Szenario</button>
     <div class="grp2">
       <div class="fld"><label for="elETitel">Titel <small>(sehen nur Sie)</small></label><input type="text" id="elETitel" value="${esc(e.titel)}" placeholder="z. B. Stromausfall Linden" autocomplete="off"></div>
-      <div class="fld"><label for="elEFrom">Von <small>(steht vor der Meldung im Verlauf)</small></label><input type="text" id="elEFrom" value="${esc(e.absender)}" placeholder="z. B. Polizei, Stadtwerke, EAL Nord" autocomplete="off"></div>
+      <div class="el-row2"><div class="fld"><label for="elEZeit">Geplante Zeit</label><input type="time" id="elEZeit" value="${esc(e.zeit)}"></div>
+      <div class="fld"><label for="elEAn">An</label><input type="text" id="elEAn" value="${esc(e.an)}" placeholder="z. B. FüSt FW" autocomplete="off"></div></div>
+      <div class="fld"><label for="elEFrom">Von <small>(steht vor der Meldung im Verlauf)</small></label><input type="text" id="elEFrom" value="${esc(e.absender)}" placeholder="z. B. Leitstelle FW, Polizei" autocomplete="off"></div>
       <div class="fld"><label for="elEText">Meldung</label><textarea id="elEText" rows="5" placeholder="Text, der beim Einspielen im Verlauf erscheint">${esc(e.text)}</textarea></div>
-      <div class="fld"><label for="elENote">Notiz für die Leitung <small>(wird nicht eingespielt)</small></label><textarea id="elENote" rows="2" placeholder="z. B. erwartete Reaktion des Stabes">${esc(e.notiz)}</textarea></div>
+      <div class="fld"><label for="elENote">Notiz für die Leitung <small>(wird nicht eingespielt)</small></label><textarea id="elENote" rows="3" placeholder="z. B. erwartete Reaktion des Stabes">${esc(e.notiz)}</textarea></div>
       <div class="fld"><label for="elERid">Reiter</label><select id="elERid">${s.reiter.map((r) => `<option value="${r.id}" ${r.id === f.r.id ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select></div>
     </div>
+    ${elAktionEditor(e)}
     <div class="grp2"><h5>Bilder <small>(landen in der Ablage)</small></h5>
       ${e.bilder.map((b) => `<div class="el-bi"><img src="${esc(b.data)}" alt=""><input type="text" class="el-bc" data-bid="${b.id}" value="${esc(b.cap)}" placeholder="Bildunterschrift" autocomplete="off"><button class="btn sm sec" data-act="el-bdel" data-bid="${b.id}" aria-label="Bild entfernen">✕</button></div>`).join('')}
       <label class="btn sm sec filebtn" style="justify-self:start">Bilder hinzufügen<input type="file" id="elEImg" accept="image/*" multiple></label></div>
+    <div class="grp2"><h5>Dateien <small>(PDF, Excel, Word – landen in der Ablage)</small></h5>
+      ${e.dateien.map((d) => `<div class="el-bi"><button class="el-file" data-act="doc-open" data-url="${esc(d.data || '')}" data-name="${esc(d.name)}"><i>${docIcon(d.name, d.mime)}</i>${esc(d.name)}</button><button class="btn sm sec" data-act="el-fdel" data-fid="${d.id}" aria-label="Datei entfernen">✕</button></div>`).join('')}
+      <label class="btn sm sec filebtn" style="justify-self:start">Dateien hinzufügen<input type="file" id="elEFile" multiple></label></div>
     <div class="grp2"><h5>Lagekarte</h5>
-      ${e.objekte.length ? `<div class="el-obj">${elObjIcons(e.objekte)}<span>${e.objekte.length} Objekt${e.objekte.length === 1 ? '' : 'e'}</span></div>` : '<div class="hint">Keine Objekte. Zeichnen Sie die Lage in der Lagekarte (Gesamtlage) oder in der eines Einsatzes und übernehmen Sie sie hier. Beim Einspielen werden die Objekte kopiert – wohin, wählen Sie oben unter „Kartenobjekte in“.</div>'}
+      ${e.objekte.length ? `<div class="el-obj">${elObjIcons(e.objekte)}<span>${e.objekte.length} Objekt${e.objekte.length === 1 ? '' : 'e'}</span></div>` : '<div class="hint">Keine Objekte. Zeichnen Sie die Lage in der Lagekarte (Gesamtlage) oder in der eines Einsatzes und übernehmen Sie sie hier.</div>'}
       ${run.length ? `<div class="fld"><label for="elESrc">Aus der Lagekarte von</label><select id="elESrc">${run.map((i) => `<option value="${i.id}" ${i.id === src ? 'selected' : ''}>${i.lage ? 'Lagekarte (Gesamtlage)' : esc(i.title) + ' – ' + esc(i.addr.street)} (${i.drawings.length})</option>`).join('')}</select></div>
       <div class="el-row"><button class="btn sm sec" data-act="el-ograb" data-m="set">Übernehmen (ersetzen)</button><button class="btn sm sec" data-act="el-ograb" data-m="add">Hinzufügen</button>${e.objekte.length ? '<button class="btn sm sec" data-act="el-oclr">Leeren</button>' : ''}</div>` : '<div class="hint">Noch keine gezeichnete Lagekarte vorhanden.</div>'}</div>
     <button class="btn sec" data-act="el-edel" style="color:var(--danger)">${EL.confirm === 'e' + e.id ? 'Einlage wirklich löschen?' : 'Einlage löschen'}</button>`;
@@ -4458,35 +4724,72 @@ async function addDrawings(targetId, objs) {
   for (const m of [dMap, lMap, LK.map]) if (m) { m.__dsig = null; m.__gsig = null; }
   return true;
 }
-async function elPlay(eid) {
+function elMarkDone(f, entry) {
+  (EL.done[f.s.id] = EL.done[f.s.id] || {})[f.e.id] = elDone(f.s.id, f.e.id).concat([entry]);
+  elSave();
+  if (ONLINE) ELDB.set('done', EL.done); // Fortschritt sofort sichern
+}
+async function elPlay(eid, preInc) {
   const f = elFind(eid);
   if (!f) return;
-  const e = f.e;
-  if (!e.text && !e.bilder.length && !e.objekte.length) { toast('Diese Einlage ist noch leer.'); return; }
-  const incId = EL.target;
-  const inc0 = sim.incById(incId);
-  const needInc = e.text || e.bilder.length || (e.objekte.length && EL.objTarget !== LAGE_ID);
-  if (needInc && (!inc0 || inc0.status !== 'laufend')) { toast('Bitte einen laufenden Einsatz als Ziel wählen.'); return; }
+  const e = f.e, a = e.aktion;
+  const hasMsg = !!(e.text || e.bilder.length || e.dateien.length);
+  if (!hasMsg && !e.objekte.length && !a) { toast('Diese Einlage ist noch leer.'); return; }
   EL.busy = eid; renderEL(true);
   try {
+    let incId = preInc || elTargetFor(f.s, f.r);
+    // 1) Einsatz anlegen (falls die Einlage einen auslöst)
+    if (a && a.typ === 'einsatz' && !preInc) {
+      const inc = await elCreateIncident(a, (newInc) => elPlay(eid, newInc.id));
+      if (!inc) return; // Dialog ist offen, geht nach dem Anlegen weiter
+      incId = inc.id;
+    }
+    const inc0 = sim.incById(incId);
+    const needInc = hasMsg || (a && (a.typ === 'nachalarm' || a.typ === 'erhoehen')) || (e.objekte.length && EL.objTarget !== LAGE_ID);
+    if (needInc && (!inc0 || inc0.status !== 'laufend')) { toast('Bitte oben einen laufenden Einsatz als Ziel wählen.'); return; }
+    // 2) Meldung, Bilder, Dateien
     if (e.text) await api.log(sim.incById(incId), (e.absender ? e.absender + ': ' : '') + e.text, 'lage');
     for (const b of e.bilder) {
       let src = b.data;
       if (ONLINE && b.path) { src = await FILES.copyToAblage(b.path); if (!src) { toast('Ein Bild konnte nicht eingespielt werden'); continue; } }
       await api.photo(sim.incById(incId), src, b.cap || e.titel);
     }
+    for (const d of e.dateien) {
+      let src = d.data;
+      if (ONLINE && d.path) { src = await FILES.copyToAblage(d.path); if (!src) { toast('Eine Datei konnte nicht eingespielt werden'); continue; } }
+      await api.photo(sim.incById(incId), src, d.name, { doc: true, name: d.name, mime: d.mime });
+    }
     if (e.objekte.length) await addDrawings(EL.objTarget === LAGE_ID ? LAGE_ID : incId, e.objekte);
+    // 3) Aktion
+    if (a && a.typ === 'nachalarm') { let miss = 0; for (const k of a.kinds) { const ok = await api.nachalarm(sim.incById(incId), k); if (!ok) miss++; } if (miss) toast(`${miss} Fahrzeug${miss > 1 ? 'e' : ''} nicht verfügbar – steht im Verlauf`); }
+    if (a && a.typ === 'erhoehen' && AAO[a.stw]) await api.erhoehen(sim.incById(incId), a.stw);
+    if (a && a.typ === 'rdlast') await api.rdlast(a.anzahl, a.minuten);
     const inc = sim.incById(incId);
-    const title = [needInc && inc ? inc.title : '', e.objekte.length && EL.objTarget === LAGE_ID ? 'Gesamtlage' : ''].filter(Boolean).join(' + ');
-    (EL.done[f.s.id] = EL.done[f.s.id] || {})[eid] = elDone(f.s.id, eid).concat([{ t: sim.now, inc: incId, title }]);
-    elSave();
-    if (ONLINE) ELDB.set('done', EL.done); // Fortschritt sofort sichern
+    const title = [inc && (needInc || (a && a.typ === 'einsatz')) ? inc.title : '', a && a.typ === 'rdlast' ? 'RD-Last' : '', e.objekte.length && EL.objTarget === LAGE_ID ? 'Gesamtlage' : ''].filter(Boolean).join(' + ');
+    elMarkDone(f, { t: sim.now, inc: inc ? incId : null, title });
     toast(`Eingespielt: ${e.titel || 'Einlage'}`);
   } finally {
     EL.busy = null;
     render(true);
     renderEL(true);
   }
+}
+async function elAddFiles(files) {
+  const f = elFind(EL.edit);
+  if (!f) return;
+  for (const file of files) {
+    if (file.size > 25 * 1024 * 1024) { toast(`${file.name}: zu groß (max. 25 MB)`); continue; }
+    const data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+    const d = { id: elId('D'), name: file.name, mime: file.type || '' , data };
+    if (ONLINE) {
+      const path = await FILES.upload('einlagen', data, elExt(file.name, file.type));
+      if (!path) { toast(`${file.name} konnte nicht hochgeladen werden`); continue; }
+      d.path = path;
+    }
+    f.e.dateien.push(d);
+  }
+  const i = $('#elEFile'); if (i) i.value = '';
+  elSave(); renderEL(true);
 }
 function elDownload(name, data) {
   downloadBlob(name, new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }));
@@ -4542,6 +4845,9 @@ document.addEventListener('click', async (ev) => {
   if (act !== 'el-reset' && act !== 'el-delscen' && act !== 'el-rdel' && act !== 'el-edel') EL.confirm = null;
   switch (act) {
     case 'el-mode': EL.mode = EL.mode === 'edit' ? 'play' : 'edit'; EL.edit = null; break;
+    case 'el-check': { const f = elFind(b.dataset.id); if (f) elMarkDone(f, { t: sim.now, inc: null, title: 'abgehakt', skip: true }); renderEL(true); return; }
+    case 'el-undo': { const f = elFind(b.dataset.id); if (f && EL.done[f.s.id]) { delete EL.done[f.s.id][f.e.id]; elSave(); if (ONLINE) ELDB.set('done', EL.done); } renderEL(true); return; }
+    case 'el-fdel': { const f = elFind(EL.edit); if (f) f.e.dateien = f.e.dateien.filter((x) => x.id !== b.dataset.fid); break; }
     case 'el-play': await elPlay(b.dataset.id); return;
     case 'el-new': {
       const n = elNormalize({ name: 'Neues Szenario', reiter: [{ name: 'Phase 1', einlagen: [] }] });
@@ -4555,7 +4861,7 @@ document.addEventListener('click', async (ev) => {
     case 'el-radd': if (s) s.reiter.push({ id: elId('R'), name: `Phase ${s.reiter.length + 1}`, einlagen: [] }); break;
     case 'el-rup': case 'el-rdown': { const i = s.reiter.findIndex((r) => r.id === b.dataset.rid); elMove(s.reiter, i, act === 'el-rup' ? -1 : 1); break; }
     case 'el-rdel': { const r = s.reiter.find((x) => x.id === b.dataset.rid); if (!r) break; if (r.einlagen.length && !confirm2('r' + r.id)) return; s.reiter = s.reiter.filter((x) => x !== r); break; }
-    case 'el-eadd': { const r = s.reiter.find((x) => x.id === b.dataset.rid); if (!r) break; const e = { id: elId('E'), titel: '', absender: '', text: '', notiz: '', bilder: [], objekte: [] }; r.einlagen.push(e); EL.edit = e.id; elSave(); renderEL(true); const t = $('#elETitel'); if (t) t.focus(); return; }
+    case 'el-eadd': { const r = s.reiter.find((x) => x.id === b.dataset.rid); if (!r) break; const e = { id: elId('E'), titel: '', zeit: '', absender: '', an: '', text: '', notiz: '', bilder: [], dateien: [], objekte: [], aktion: null }; r.einlagen.push(e); EL.edit = e.id; elSave(); renderEL(true); const t = $('#elETitel'); if (t) t.focus(); return; }
     case 'el-edit': EL.edit = b.dataset.id; if ($('#elBody')) $('#elBody').scrollTop = 0; break;
     case 'el-back': EL.edit = null; break;
     case 'el-eup': case 'el-edown': { const f = elFind(b.dataset.id); if (f) elMove(f.r.einlagen, f.ei, act === 'el-eup' ? -1 : 1); break; }
@@ -4581,6 +4887,21 @@ document.addEventListener('change', (ev) => {
   if (t.id === 'elObjT') { EL.objTarget = t.value; store.set('el-objtarget', t.value); renderEL(true); }
   if (t.id === 'elImport') elImport([...(t.files || [])]);
   if (t.id === 'elEImg') elAddImages([...(t.files || [])]);
+  if (t.id === 'elEFile') elAddFiles([...(t.files || [])]);
+  {
+    const f = EL.edit && elFind(EL.edit);
+    if (f && t.id === 'elATyp') {
+      const def = { einsatz: { typ: 'einsatz', key: Object.keys(CATALOG)[0] }, nachalarm: { typ: 'nachalarm', kinds: [] }, erhoehen: { typ: 'erhoehen', stw: Object.keys(AAO)[0] }, rdlast: { typ: 'rdlast', anzahl: 10, minuten: 30 } }[t.value];
+      f.e.aktion = def ? elNormAktion(def) : null; elSave(); renderEL(true);
+    }
+    if (f && f.e.aktion) {
+      if (t.id === 'elAKey') { f.e.aktion.key = t.value; elSave(); }
+      if (t.id === 'elAStw') { f.e.aktion.stw = t.value; elSave(); }
+      if (t.id === 'elAOhne') { f.e.aktion.ohneAlarm = t.checked; elSave(); }
+      if (t.id === 'elAStd') { f.e.aktion.standard = t.checked; elSave(); }
+    }
+    if (f && t.id === 'elEZeit') { f.e.zeit = elNormZeit(t.value); elSave(); }
+  }
   if (t.id === 'elERid') {
     const f = elFind(EL.edit); const r = f && f.s.reiter.find((x) => x.id === t.value);
     if (f && r && r !== f.r) { f.r.einlagen.splice(f.ei, 1); r.einlagen.push(f.e); elSave(); renderEL(true); }
@@ -4599,6 +4920,13 @@ document.addEventListener('input', (ev) => {
   else if (f && t.id === 'elEFrom') f.e.absender = t.value;
   else if (f && t.id === 'elEText') f.e.text = t.value;
   else if (f && t.id === 'elENote') f.e.notiz = t.value;
+  else if (f && t.id === 'elEAn') f.e.an = t.value;
+  else if (f && t.id === 'elEZeit') f.e.zeit = elNormZeit(t.value);
+  else if (f && f.e.aktion && ['elASw', 'elAAnl', 'elAStr', 'elAPlz', 'elAObj'].includes(t.id)) f.e.aktion[{ elASw: 'sw', elAAnl: 'anlass', elAStr: 'strasse', elAPlz: 'plz', elAObj: 'objekt' }[t.id]] = t.value;
+  else if (f && f.e.aktion && t.id === 'elAPlus') f.e.aktion.plus = t.value.split(/[,;]+/).map((x) => x.trim()).filter(Boolean);
+  else if (f && f.e.aktion && t.id === 'elAKinds') f.e.aktion.kinds = t.value.split(/[,;]+/).map((x) => x.trim()).filter(Boolean).map((x) => Object.keys(KIND_LABEL).find((k) => k.toLowerCase() === x.toLowerCase()) || x);
+  else if (f && f.e.aktion && t.id === 'elAAnz') f.e.aktion.anzahl = Math.max(1, Math.min(60, Math.round(+t.value) || 1));
+  else if (f && f.e.aktion && t.id === 'elAMin') f.e.aktion.minuten = Math.max(0, Math.min(240, Math.round(+t.value) || 0));
   else if (f && t.classList.contains('el-bc')) { const bb = f.e.bilder.find((x) => x.id === t.dataset.bid); if (bb) bb.cap = t.value; }
   else return;
   elSave();
@@ -4693,6 +5021,7 @@ document.addEventListener('click', async (e) => {
     case 'lk-export': openSheet('Lagekarte exportieren', `<div class="hint">ZIP mit drei GeoJSON-Dateien (Lagekarte_p Punkte, _l Linien, _f Flächen), EPSG:4326 / WGS84. Felder: Typ, Kategorie, Zeichen (Text im Zeichen), Titel, Info. Lässt sich in QGIS öffnen und hier wieder importieren.</div><button class="btn" data-act="lk-exp">Exportieren</button>`); break;
     case 'lk-exp': lkExport(); break;
     case 'ablage': openAblage(); break;
+    case 'doc-open': openDoc(b.dataset.url, b.dataset.name); break;
     case 'foto-big': openSheet(b.dataset.cap || 'Foto', `<img class="photo-big" src="${esc(b.dataset.url)}" alt="${esc(b.dataset.cap || 'Foto')}">${b.dataset.cap ? `<div class="hint">${esc(b.dataset.cap)}</div>` : ''}<button class="btn sec" data-act="ablage">Zurück zur Ablage</button>`); break;
     case 'ul-rm': { const i = sim.incById($('#ulInc').value); const t = $('#ulText').value.trim(); if (!i || !t) { toast('Bitte Einsatz wählen und Text eingeben.'); break; } await api.rueckmeldung(i, t); $('#ulText').value = ''; toast('Rückmeldung eingespielt'); break; }
     case 'ul-foto': {
@@ -4839,6 +5168,7 @@ async function tickOnce() {
   }
   // Hing der Rechner (Ruhezustand, Hintergrund), wird die verpasste Zeit nachgeholt – die Uhr bleibt auf Echtzeit
   if (elapsed > 6000) catchUp(elapsed); else sim.tick(dt);
+  processPlan();
   if (sim.autoDue('fire', dt)) { UI.autoFlag = true; await newIncident({ key: sim.autoKey('fire') }); UI.autoFlag = false; }
   if (sim.autoDue('rd', dt)) { await newIncident({ key: sim.autoKey('rd') }); }
   if (NET.host) {
