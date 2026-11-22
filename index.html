@@ -2330,7 +2330,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-22 09:47';
+const APP_VERSION = '2026-11-22 11:34';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -3566,7 +3566,7 @@ function ulExtra() {
   const uhr = `<div class="grp2"><h5>Übungsuhr</h5><div class="hint">Läuft normalerweise mit der echten Zeit. Nach Zeitraffer oder wenn sie abweicht: zurück auf die aktuelle Uhrzeit (Tempo 1×).</div><button class="btn sec" data-act="clock-now">Uhr auf jetzt stellen</button></div>`;
   const version = `<div class="hint">Version ${esc(APP_VERSION)}</div>`;
   const konto = ONLINE ? `<div class="grp2"><h5>Angemeldet</h5><div class="hint">${esc(APPX.user.name)} · Übungsleitung</div><button class="btn sec" data-act="logout">Abmelden</button></div>` : '';
-  return uhr + zentrale + stamm + konto + version;
+  return uhr + zentrale + packBlock() + stamm + konto + version;
 }
 async function uploadStamm(file) {
   if (!file) return;
@@ -4256,8 +4256,9 @@ const ELDB_LOCAL = {
 function elStorable(s) {
   const c = JSON.parse(JSON.stringify(s));
   for (const r of c.reiter) for (const e of r.einlagen) {
-    e.bilder = e.bilder.map((b) => (b.path ? { id: b.id, path: b.path, cap: b.cap } : b));
-    e.dateien = (e.dateien || []).map((d) => (d.path ? { id: d.id, path: d.path, name: d.name, mime: d.mime } : d));
+    // nur Verweise speichern – nicht hochgeladene Anlagen nie als Daten in die Datenbank (Zeile würde zu groß)
+    e.bilder = e.bilder.filter((b) => b.path).map((b) => ({ id: b.id, path: b.path, cap: b.cap }));
+    e.dateien = (e.dateien || []).filter((d) => d.path).map((d) => ({ id: d.id, path: d.path, name: d.name, mime: d.mime }));
   }
   return c;
 }
@@ -4290,7 +4291,8 @@ const ELDB_ONLINE = {
       const gone = [...this.saved.keys()].filter((id) => !sigs.has(id));
       if (changed.length) {
         const { error } = await sb.from('szenarien').upsert(changed);
-        if (error) { console.error(error); toast('Einlagen konnten nicht gespeichert werden'); return; }
+        if (error) { console.error(error); this.lastError = error.message || 'Fehler'; toast('Einlagen konnten nicht gespeichert werden: ' + (error.message || '')); return; }
+        this.lastError = null;
       }
       if (gone.length) {
         const { error } = await sb.from('szenarien').delete().in('id', gone);
@@ -4319,8 +4321,7 @@ async function elUploadImages(s) {
   for (const r of s.reiter) for (const e of r.einlagen) for (const b of e.bilder.concat(e.dateien || [])) if (!b.path && String(b.data || '').startsWith('data:')) todo.push(b);
   if (!todo.length) return;
   toast(`${todo.length} Anlage${todo.length > 1 ? 'n werden' : ' wird'} hochgeladen …`);
-  let fail = 0;
-  for (const b of todo) { const p = await FILES.upload('einlagen', b.data, b.name ? elExt(b.name, b.mime) : 'jpg'); if (p) b.path = p; else fail++; }
+  const { fail } = await elUploadAll(s, (n, t) => { if (n % 5 === 0 && n < t) toast(`Anlagen hochgeladen: ${n} von ${t} …`); });
   if (fail) toast(`${fail} Anlage${fail > 1 ? 'n' : ''} konnte${fail > 1 ? 'n' : ''} nicht hochgeladen werden`);
 }
 // Für den Export: Bilder als Daten in die Datei schreiben, damit sie auch am Einzelplatz funktioniert
@@ -4333,6 +4334,78 @@ async function elExportable(s) {
   }
   for (const r of c.reiter) for (const e of r.einlagen) { e.bilder = e.bilder.filter((b) => String(b.data || '').startsWith('data:')); e.dateien = (e.dateien || []).filter((b) => String(b.data || '').startsWith('data:')); }
   return c;
+}
+// Anlagen hochladen: mit Wiederholung und Fortschritt
+async function elUploadAll(s, onProg) {
+  const todo = [];
+  for (const r of s.reiter) for (const e of r.einlagen) for (const b of e.bilder.concat(e.dateien || [])) if (!b.path && String(b.data || '').startsWith('data:')) todo.push(b);
+  let fail = 0, n = 0;
+  for (const b of todo) {
+    let p = null;
+    for (let t = 0; t < 3 && !p; t++) {
+      p = await FILES.upload('einlagen', b.data, b.name ? elExt(b.name, b.mime) : 'jpg');
+      if (!p) await new Promise((r) => setTimeout(r, 1500 * (t + 1)));
+    }
+    if (p) b.path = p; else fail++;
+    n++; if (onProg) onProg(n, todo.length, fail);
+  }
+  return { total: todo.length, fail };
+}
+// Vorbereitete Übung: verschlüsselte Datei im Tool (nur mit Kennwort lesbar)
+const PACKS = [{ file: 'uebung/stabsuebung-2026-11-24.bin', name: 'Stabsübung 24.11.2026 – Feuerwehr' }];
+async function packDecrypt(buf, pw) {
+  const u = new Uint8Array(buf);
+  if (String.fromCharCode(...u.slice(0, 4)) !== 'EUE1') throw new Error('Datei ungültig');
+  const salt = u.slice(4, 20), iv = u.slice(20, 32), ct = u.slice(32);
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 600000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+  let plain;
+  try { plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct); } catch (e) { throw new Error('Kennwort falsch'); }
+  const txt = await new Response(new Blob([plain]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+  return JSON.parse(txt);
+}
+async function loadPack(i) {
+  const p = PACKS[i], pwEl = $('#packPw'), st = $('#packStat');
+  const say = (t, bad) => { if (st) { st.textContent = t; st.style.color = bad ? '#b4231b' : ''; } };
+  const pw = pwEl ? pwEl.value.trim() : '';
+  if (!pw) { say('Bitte zuerst das Kennwort eingeben.', true); return; }
+  if (UI.packBusy) return;
+  UI.packBusy = true;
+  try {
+    say('Datei wird geladen …');
+    const r = await fetch(p.file + '?v=' + encodeURIComponent(APP_VERSION), { cache: 'no-store' });
+    if (!r.ok) throw new Error('Datei nicht gefunden (' + r.status + ')');
+    say('Wird entschlüsselt …');
+    const j = await packDecrypt(await r.arrayBuffer(), pw);
+    await elLoad();
+    const arr = Array.isArray(j.szenarien) ? j.szenarien : [j];
+    let einl = 0, fails = 0, total = 0;
+    for (const raw of arr) {
+      const s = elNormalize(raw);
+      einl += s.reiter.reduce((n, x) => n + x.einlagen.length, 0);
+      // schon hochgeladene Anlagen einer älteren Fassung wiederverwenden
+      const old = EL.list.find((x) => x.id === s.id), have = new Map();
+      if (old) for (const r of old.reiter) for (const e of r.einlagen) for (const b of e.bilder.concat(e.dateien || [])) if (b.path) have.set(e.id + '|' + b.id, b);
+      for (const r of s.reiter) for (const e of r.einlagen) for (const b of e.bilder.concat(e.dateien || [])) { const h = have.get(e.id + '|' + b.id); if (h) { b.path = h.path; b.data = h.data; } }
+      if (ONLINE) {
+        const res = await elUploadAll(s, (n, t, f) => say(`Anlagen werden hochgeladen: ${n} von ${t}${f ? ` (${f} fehlgeschlagen)` : ''} – bitte warten …`));
+        fails += res.fail; total += res.total;
+      }
+      if (EL.list.some((x) => x.id === s.id)) EL.list = EL.list.map((x) => (x.id === s.id ? s : x)); else EL.list.push(s);
+      EL.cur = s.id;
+    }
+    EL.open.clear(); EL.edit = null; elSave();
+    if (ONLINE) { await new Promise((r) => setTimeout(r, 900)); await ELDB.q; if (ELDB.lastError) throw new Error('Speichern in Supabase fehlgeschlagen: ' + ELDB.lastError); }
+    say(`Fertig: ${einl} Einlagen geladen${ONLINE ? (total ? `, ${total - fails} von ${total} Anlagen hochgeladen` : ', alle Anlagen waren schon vorhanden') : ''}.${fails ? ' Fehlende Anlagen: einfach noch einmal laden.' : ''}`, !!fails);
+    toast('Einlagen geladen – zu finden unter „Einlagen“');
+    if (pwEl) pwEl.value = '';
+  } catch (e) { console.error(e); say(e.message || 'Laden fehlgeschlagen', true); }
+  finally { UI.packBusy = false; }
+}
+function packBlock() {
+  return `<div class="grp2"><h5>Vorbereitete Übung</h5><div class="hint">Die Einlagen liegen verschlüsselt im Tool. Mit dem Kennwort in die Einlagen laden (ersetzt eine ältere Fassung, „Erledigt“-Haken bleiben).</div>
+    ${PACKS.map((p, i) => `<div class="el-row"><input id="packPw" type="password" autocomplete="off" placeholder="Kennwort" style="flex:1;min-width:120px"><button class="btn sm" data-act="pack-load" data-i="${i}">${esc(p.name)} laden</button></div>`).join('')}
+    <div class="hint" id="packStat" aria-live="polite"></div></div>`;
 }
 
 /* ---------- Einlagen: Zeit, Empfänger, Anlagen, Aktionen ---------- */
@@ -4969,6 +5042,7 @@ document.addEventListener('click', async (e) => {
     case 'new-inc': openNew(); break;
     case 'open-ul': UI.confirmReset = false; openUL(); break;
     case 'claim': if (await tryClaim(true)) refreshUL(); break;
+    case 'pack-load': await loadPack(+b.dataset.i || 0); break;
     case 'clock-now': await api.clock(); toast('Übungsuhr steht auf ' + new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })); render(true); refreshUL(); break;
     case 'logout':
       if (NET.host) { await beat(); try { await APPX.sb.rpc('release_host', { p_sid: APPX.sid }); } catch (err) { /* egal */ } NET.host = false; }
