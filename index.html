@@ -1214,6 +1214,14 @@ input, select, textarea { font: inherit; }
 .el-h select { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 8px; border: 0; font-size: 14px; font-weight: 600; background: #fff; color: var(--ink); }
 .el-h .btn.sec { background: rgba(255,255,255,.12); color: #fff; border-color: rgba(255,255,255,.3); }
 .el-h .btn.primary { background: #ffe400; color: #1b1f33; }
+.ep-map { height: 320px; border-radius: 10px; border: 1px solid var(--line); margin-top: 8px; }
+.ep-v { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+.ep-v select { flex: 1.2; min-width: 0; } .ep-v input:not([type]) { flex: 1; min-width: 0; } .ep-v input[type=number] { width: 80px; }
+.ep-v.off select, .ep-v.off input { opacity: .45; }
+.ep-h { width: 26px; height: 26px; border-radius: 50%; background: #fff; border: 2px solid #c92a2a; display: grid; place-items: center; font-size: 15px; cursor: move; }
+.ep-pt { cursor: move; }
+.ep-send { justify-content: flex-end; margin-top: 12px; }
+.el-vs { background: #e7f5ff; }
 .el-b { overflow-y: auto; overflow-x: hidden; padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; gap: 10px; align-content: start; }
 .el-b > * { min-height: max-content; }
 .el .grp2 { grid-template-columns: minmax(0, 1fr); }
@@ -2331,7 +2339,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-22 12:09';
+const APP_VERSION = '2026-11-22 12:51';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -3347,7 +3355,7 @@ function openSheet(title, body, opts) {
   UI.sheetLive = opts.live || null;
   if (opts.after) opts.after();
 }
-function closeSheet() { $('#ov').hidden = true; UI.sheetLive = null; if (UI.niMap) { UI.niMap.remove(); UI.niMap = null; } }
+function closeSheet() { $('#ov').hidden = true; UI.sheetLive = null; UI.elPrep = null; if (UI.epMap) { UI.epMap.remove(); UI.epMap = null; } if (UI.niMap) { UI.niMap.remove(); UI.niMap = null; } }
 
 function openLog() {
   const id = UI.sel;
@@ -4490,6 +4498,7 @@ function elLocalPos(q, plz) {
   const cand = [];
   for (const x of (typeof ALL_ADDR !== 'undefined' ? ALL_ADDR : [])) cand.push([x.street, x.pos]);
   for (const h of (typeof HOSPITALS !== 'undefined' ? HOSPITALS : [])) cand.push([String(h.addr).split(',')[0], h.pos]);
+  for (const h of [...(typeof LES !== 'undefined' ? LES : []), ...Object.values(typeof SITES !== 'undefined' ? SITES : {})]) if (h && h.addr) cand.push([String(h.addr).split(',')[0], h.pos]);
   for (const [street, pos] of cand) {
     const sm = String(street || '').match(/^(.*?)(?:\s+(\d+)\s*[a-z]?)?$/i);
     if (!sm || norm(sm[1]) !== want || !Array.isArray(pos)) continue;
@@ -4500,7 +4509,14 @@ function elLocalPos(q, plz) {
 }
 async function elCreateIncident(a, after) {
   const cat = CATALOG[a.key];
-  const item = { sw: a.sw || cat.items[0].sw, anlass: a.anlass || a.sw || '', types: ['G'], plus: a.plus || [], quiet: true, nodispatch: !!a.ohneAlarm };
+  // Regeln aus dem Schlagwort-Katalog übernehmen (z. B. B2 BMA: ohne RTW und ELW B; FF-Kennungen), wenn das Schlagwort passt
+  const norm = (x) => String(x || '').toLowerCase();
+  const base = cat.items.find((it) => norm(it.sw) === norm(a.sw)) || cat.items.find((it) => a.sw && norm(a.sw).includes(norm(it.sw))) || (cat.items.length === 1 || !a.sw ? cat.items[0] : null);
+  const item = Object.assign({}, base ? JSON.parse(JSON.stringify(base)) : { types: ['G'] }, {
+    sw: a.sw || (base ? base.sw : cat.items[0].sw), anlass: a.anlass || a.sw || (base ? base.anlass : ''),
+    plus: (a.plus && a.plus.length) ? a.plus.slice() : (base && base.plus ? base.plus.slice() : []), quiet: true, nodispatch: !!a.ohneAlarm,
+  });
+  delete item.lage; delete item.end;
   let pos = null, addr = null;
   if (a.site && SITES[a.site]) {
     const st = SITES[a.site];
@@ -4580,6 +4596,177 @@ document.addEventListener('click', (ev) => {
   renderEL(true);
 }, true);
 
+/* ---------- Lage-Vorschläge zu Einlagen ---------- */
+// v: { typ, g: 'p' | 'f', titel, dx, dy (Meter Ost/Nord vom Einsatzort), r (Radius in m für Flächen), geo (Adresse, optional) }
+function elNormVorschlaege(list) {
+  return (Array.isArray(list) ? list : []).filter((v) => v && TZ[v.typ]).map((v) => ({
+    typ: String(v.typ), g: TZ[v.typ].g === 'f' ? 'f' : 'p', titel: String(v.titel || ''),
+    dx: +v.dx || 0, dy: +v.dy || 0, r: Math.max(5, Math.min(5000, +v.r || 100)), ...(v.geo ? { geo: String(v.geo) } : {}),
+  }));
+}
+const M_LAT = 111320;
+function elOffset(pos, dx, dy) { return [pos[0] + dy / M_LAT, pos[1] + dx / (M_LAT * Math.cos(pos[0] * Math.PI / 180))]; }
+function elCircle(ctr, r) {
+  const out = [];
+  for (let i = 0; i <= 48; i++) { const t = (i / 48) * 2 * Math.PI; const p = elOffset(ctr, r * Math.sin(t), r * Math.cos(t)); out.push([+p[1].toFixed(7), +p[0].toFixed(7)]); }
+  return out;
+}
+// Vorschlag → Zeichnung für die Lagekarte (Position absolut aus dem Dialog oder relativ zum Einsatzort)
+function elVorschlagObj(v, inc) {
+  const ctr = v.lat != null ? [v.lat, v.lng] : elOffset(inc ? inc.pos : [51.48, 7.22], v.dx || 0, v.dy || 0);
+  if (v.g === 'f') return { g: 'f', typ: v.typ, c: elCircle(ctr, v.r || 100), titel: v.titel || '' };
+  return { g: 'p', typ: v.typ, c: [+ctr[1].toFixed(7), +ctr[0].toFixed(7)], titel: v.titel || '' };
+}
+
+/* ---------- Einspielen-Dialog: vor dem Senden ansehen und ändern ---------- */
+function elParseKinds(txt) {
+  return String(txt || '').split(/[,;]+/).map((x) => x.trim()).filter(Boolean).flatMap((x) => {
+    const m = x.match(/^(\d+)\s*[x×]?\s*(.+)$/i);
+    const n = m ? Math.min(20, +m[1]) : 1, k0 = m ? m[2].trim() : x;
+    const k = Object.keys(KIND_LABEL).find((k) => k.toLowerCase() === k0.toLowerCase() || String(KIND_LABEL[k]).toLowerCase() === k0.toLowerCase()) || k0;
+    return Array(n).fill(k);
+  });
+}
+function elKindsText(kinds) {
+  const c = new Map();
+  for (const k of kinds || []) c.set(k, (c.get(k) || 0) + 1);
+  return [...c].map(([k, n]) => (n > 1 ? n + '× ' : '') + k).join(', ');
+}
+function elPrep(eid) {
+  const f = elFind(eid);
+  if (!f) return;
+  const e = f.e, a = e.aktion ? JSON.parse(JSON.stringify(e.aktion)) : null;
+  const makesInc = a && a.typ === 'einsatz';
+  const target = makesInc ? null : elTargetFor(f.s, f.r);
+  const inc = target && sim.incById(target);
+  const P = UI.elPrep = {
+    eid, absender: e.absender, text: e.text, bilder: e.bilder.map((x) => x.id), dateien: e.dateien.map((x) => x.id),
+    aktion: a, aktOn: !!a, objekte: e.objekte.length > 0, target, makesInc,
+    lage: (e.vorschlaege || []).map((v, i) => Object.assign({ id: 'v' + i, on: true }, v, inc ? (() => { const p = elOffset(inc.pos, v.dx, v.dy); return { lat: p[0], lng: p[1] }; })() : {})),
+  };
+  // Vorschläge mit Adresse: dort platzieren (hinterlegte Adressen sofort, sonst Adresssuche)
+  for (const v of P.lage) if (v.geo) { const p = elLocalPos(v.geo); if (p) { v.lat = p[0]; v.lng = p[1]; } else geocodeAddress(v.geo, '', 4000).then((q) => { if (q && UI.elPrep === P) { v.lat = q[0]; v.lng = q[1]; elPrepMap(); } }); }
+  openSheet('Einspielen: ' + (e.titel || 'Einlage'), elPrepHtml(), { wide: true });
+  elPrepMap();
+}
+function elPrepHtml() {
+  const P = UI.elPrep, f = elFind(P.eid), e = f.e, a = P.aktion;
+  const run = elRunning();
+  const ziel = P.makesInc ? '<div class="hint">Diese Einlage legt den Einsatz an.</div>'
+    : `<div class="fld"><label for="epZiel">In Einsatz</label><select id="epZiel" data-ep="target">${run.length ? run.map((i) => `<option value="${i.id}" ${i.id === P.target ? 'selected' : ''}>${esc(i.title)} – ${esc(i.addr.street)}</option>`).join('') : '<option value="">– kein laufender Einsatz –</option>'}</select></div>`;
+  const anl = e.bilder.length || e.dateien.length ? `<div class="grp2"><h5>Anlagen</h5>${e.bilder.map((b) => `<label class="chk"><input type="checkbox" data-ep="bild" value="${b.id}" ${P.bilder.includes(b.id) ? 'checked' : ''}> Bild: ${esc(b.cap || 'ohne Titel')}</label>`).join('')}${e.dateien.map((d) => `<label class="chk"><input type="checkbox" data-ep="datei" value="${d.id}" ${P.dateien.includes(d.id) ? 'checked' : ''}> ${esc(d.name)}</label>`).join('')}</div>` : '';
+  let akt = '';
+  if (a) {
+    let flds = '';
+    if (a.typ === 'einsatz') flds = `<div class="fld"><label for="epKey">Stichwort</label><select id="epKey" data-ep="a.key">${Object.keys(CATALOG).map((k) => `<option value="${k}" ${k === a.key ? 'selected' : ''}>${esc(KEY_LABEL[k] || k)}</option>`).join('')}</select></div>
+      <div class="fld"><label for="epSw">Schlagwort</label><input id="epSw" data-ep="a.sw" value="${esc(a.sw)}" autocomplete="off"></div>
+      <div class="fld"><label for="epAnl">Einsatzanlass</label><input id="epAnl" data-ep="a.anlass" value="${esc(a.anlass)}" autocomplete="off"></div>
+      <div class="fld"><label for="epStr">Adresse</label><input id="epStr" data-ep="a.strasse" value="${esc(a.strasse)}" autocomplete="off"></div>
+      <div class="fld"><label for="epObj">Objekt / Zusatz</label><input id="epObj" data-ep="a.objekt" value="${esc(a.objekt)}" autocomplete="off"></div>
+      <label class="chk"><input type="checkbox" data-ep="a.ohneAlarm" ${a.ohneAlarm ? 'checked' : ''}> ohne Alarmierung anlegen</label>`;
+    if (a.typ === 'nachalarm') flds = `<div class="fld"><label for="epKinds">Nachalarmieren <small>(z. B. 7× RTW, 5× NEF)</small></label><input id="epKinds" data-ep="a.kinds" value="${esc(elKindsText(a.kinds))}" autocomplete="off"></div>`;
+    if (a.typ === 'erhoehen') flds = `<div class="fld"><label for="epStw">Erhöhen auf</label><select id="epStw" data-ep="a.stw">${Object.keys(AAO).map((k) => `<option ${k === a.stw ? 'selected' : ''}>${k}</option>`).join('')}</select></div>`;
+    if (a.typ === 'rdlast') flds = `<div class="el-row"><div class="fld"><label for="epAnz">RD-Einsätze</label><input id="epAnz" type="number" min="1" max="60" data-ep="a.anzahl" value="${a.anzahl}"></div><div class="fld"><label for="epMin">über Minuten</label><input id="epMin" type="number" min="0" max="240" data-ep="a.minuten" value="${a.minuten}"></div></div>`;
+    akt = `<div class="grp2"><h5>Aktion</h5><label class="chk"><input type="checkbox" data-ep="aktOn" ${P.aktOn ? 'checked' : ''}> ausführen: ${esc(elAktionText(a))}</label>${flds}</div>`;
+  }
+  const opts = (g, cur) => TZ_CATS.map((cat) => { const its = TZ_LIST.filter((x) => (x.g === 'f' ? 'f' : x.g === 'l' ? 'l' : 'p') === g && x.cat === cat); return its.length ? `<optgroup label="${esc(cat)}">${its.map((x) => `<option ${x.n === cur ? 'selected' : ''}>${esc(x.n)}</option>`).join('')}</optgroup>` : ''; }).join('');
+  const lage = `<div class="grp2"><h5>Lagekarte – Vorschläge</h5>
+    <div class="hint">${P.makesInc ? 'Werden nach dem Anlegen um den Einsatzort gesetzt.' : 'Auf der Karte verschieben, Häkchen weg = nicht übernehmen.'}</div>
+    ${P.lage.map((v) => `<div class="ep-v ${v.on ? '' : 'off'}" data-vid="${v.id}"><label class="chk"><input type="checkbox" data-ep="v.on" ${v.on ? 'checked' : ''}></label>
+      <select data-ep="v.typ" aria-label="Zeichen">${opts(v.g, v.typ)}</select>
+      <input data-ep="v.titel" value="${esc(v.titel)}" placeholder="Beschriftung" aria-label="Beschriftung">
+      ${v.g === 'f' ? `<input type="number" min="5" max="5000" step="10" data-ep="v.r" value="${v.r}" aria-label="Radius in Metern" title="Radius in Metern"><span class="hint">m</span>` : ''}</div>`).join('')}
+    <div class="el-row"><button class="btn sm sec" data-act="el-padd" data-g="p">+ Zeichen</button><button class="btn sm sec" data-act="el-padd" data-g="f">+ Bereich (Kreis)</button></div>
+    ${P.makesInc ? '' : '<div class="ep-map" id="epMap"></div>'}</div>`;
+  return `${ziel}
+    <div class="fld"><label for="epAbs">Absender</label><input id="epAbs" data-ep="absender" value="${esc(P.absender)}" autocomplete="off"></div>
+    <div class="fld"><label for="epText">Meldung</label><textarea id="epText" rows="5" data-ep="text">${esc(P.text)}</textarea></div>
+    ${e.notiz ? `<div class="el-note"><b>Leitung:</b> ${esc(e.notiz)}</div>` : ''}
+    ${anl}${akt}${lage}
+    ${e.objekte.length ? `<label class="chk"><input type="checkbox" data-ep="objekte" ${P.objekte ? 'checked' : ''}> ${e.objekte.length} gespeicherte Kartenobjekte mitsenden</label>` : ''}
+    <div class="el-row ep-send"><button class="btn sec" data-act="close-sheet">Abbrechen</button><button class="btn" data-act="el-psend">Senden</button></div>`;
+}
+function elPrepRefresh() {
+  const P = UI.elPrep; if (!P || !$('#sheetBody')) return;
+  const sc = $('#sheetBody').scrollTop;
+  if (UI.epMap) { UI.epMap.remove(); UI.epMap = null; }
+  $('#sheetBody').innerHTML = elPrepHtml();
+  $('#sheetBody').scrollTop = sc;
+  elPrepMap();
+}
+function elPrepMap() {
+  const P = UI.elPrep, el = $('#epMap');
+  if (!P || !el) return;
+  const inc = sim.incById(P.target);
+  if (!inc) { el.innerHTML = '<div class="hint" style="padding:12px">Kein Ziel-Einsatz – Karte nicht verfügbar.</div>'; return; }
+  for (const v of P.lage) if (v.lat == null) { const p = elOffset(inc.pos, v.dx, v.dy); v.lat = p[0]; v.lng = p[1]; }
+  if (!UI.epMap) {
+    UI.epMap = L.map(el, { attributionControl: false }).setView(inc.pos, 16);
+    L.tileLayer(MAPCFG.karte, { maxZoom: 19, maxNativeZoom: 18 }).addTo(UI.epMap);
+    L.marker(inc.pos, { interactive: false, icon: L.divIcon({ className: '', html: `<div class="mk-inc">${ICON.fire}</div>`, iconSize: [34, 34], iconAnchor: [17, 17] }) }).addTo(UI.epMap);
+    UI.epMap.__g = L.layerGroup().addTo(UI.epMap);
+    setTimeout(() => UI.epMap && UI.epMap.invalidateSize(), 60);
+  }
+  const g = UI.epMap.__g; g.clearLayers();
+  const pts = [inc.pos];
+  for (const v of P.lage) {
+    if (!v.on) continue;
+    const ll = [v.lat, v.lng]; pts.push(ll);
+    if (v.g === 'f') {
+      const st = polyStyle(v.typ);
+      const c = L.circle(ll, Object.assign({}, st, { radius: v.r, interactive: false })).addTo(g);
+      const h = L.marker(ll, { draggable: true, icon: L.divIcon({ className: '', html: '<div class="ep-h">✥</div>', iconSize: [26, 26], iconAnchor: [13, 13] }) }).addTo(g);
+      h.on('drag', (ev) => c.setLatLng(ev.target.getLatLng()));
+      h.on('dragend', (ev) => { const p = ev.target.getLatLng(); v.lat = p.lat; v.lng = p.lng; });
+      if (v.titel) h.bindTooltip(esc(v.titel), { direction: 'top' });
+      const b = c.getBounds(); pts.push([b.getNorth(), b.getEast()], [b.getSouth(), b.getWest()]);
+    } else {
+      const ic = pointIconHtml(v.typ, ''), [w, h0] = iconDims(ic);
+      const m = L.marker(ll, { draggable: true, icon: L.divIcon({ className: '', iconSize: [w, h0], iconAnchor: [w / 2, h0 / 2], html: `<div class="ep-pt">${ic}</div>` }) }).addTo(g);
+      m.on('dragend', (ev) => { const p = ev.target.getLatLng(); v.lat = p.lat; v.lng = p.lng; });
+      m.bindTooltip(esc(v.titel || v.typ), { direction: 'top', permanent: !!v.titel, className: 'tz-tt' });
+    }
+  }
+  if (pts.length > 1 && !UI.epMap.__fitted) { UI.epMap.fitBounds(L.latLngBounds(pts), { padding: [30, 30], maxZoom: 17 }); UI.epMap.__fitted = true; }
+}
+async function elPrepSend() {
+  const P = UI.elPrep; if (!P) return;
+  const a = P.aktOn ? P.aktion : null;
+  if (a && a.typ === 'einsatz' && !CATALOG[a.key]) { toast('Stichwort fehlt'); return; }
+  const ov = { absender: P.absender, text: P.text, bilder: P.bilder, dateien: P.dateien, aktion: a, objekte: P.objekte, target: P.target,
+    lage: P.lage.filter((v) => v.on).map((v) => (P.makesInc ? { typ: v.typ, g: v.g, titel: v.titel, dx: v.dx, dy: v.dy, r: v.r } : { typ: v.typ, g: v.g, titel: v.titel, r: v.r, lat: v.lat, lng: v.lng })) };
+  UI.elPrep = null;
+  closeSheet();
+  if (UI.epMap) { UI.epMap.remove(); UI.epMap = null; }
+  await elPlay(P.eid, null, ov);
+}
+// Eingaben im Dialog
+function elPrepInput(t) {
+  const P = UI.elPrep; if (!P || !t.dataset || !t.dataset.ep) return;
+  const k = t.dataset.ep, val = t.type === 'checkbox' ? t.checked : t.value;
+  if (k === 'absender' || k === 'text') P[k] = val;
+  else if (k === 'target') { P.target = val; for (const v of P.lage) { v.lat = null; } if (UI.epMap) { UI.epMap.remove(); UI.epMap = null; } elPrepMap(); }
+  else if (k === 'bild' || k === 'datei') { const arr = k === 'bild' ? P.bilder : P.dateien; const i = arr.indexOf(t.value); if (t.checked && i < 0) arr.push(t.value); if (!t.checked && i >= 0) arr.splice(i, 1); }
+  else if (k === 'aktOn' || k === 'objekte') P[k] = val;
+  else if (k.startsWith('a.') && P.aktion) {
+    const f = k.slice(2);
+    if (f === 'kinds') P.aktion.kinds = elParseKinds(val);
+    else if (f === 'anzahl') P.aktion.anzahl = Math.max(1, Math.min(60, Math.round(+val) || 1));
+    else if (f === 'minuten') P.aktion.minuten = Math.max(0, Math.min(240, Math.round(+val) || 0));
+    else P.aktion[f] = val;
+  } else if (k.startsWith('v.')) {
+    const row = t.closest('[data-vid]'), v = row && P.lage.find((x) => x.id === row.dataset.vid);
+    if (!v) return;
+    const f = k.slice(2);
+    if (f === 'on') { v.on = val; row.classList.toggle('off', !val); elPrepMap(); }
+    else if (f === 'r') { v.r = Math.max(5, Math.min(5000, +val || 100)); if (/\d+\s*m\b/.test(v.titel)) { v.titel = v.titel.replace(/\d+\s*m\b/, v.r + ' m'); const ti = row.querySelector('[data-ep="v.titel"]'); if (ti) ti.value = v.titel; } elPrepMap(); }
+    else if (f === 'typ') { v.typ = val; elPrepMap(); }
+    else if (f === 'titel') v.titel = val;
+  }
+}
+document.addEventListener('input', (ev) => { if (ev.target.closest && ev.target.closest('#sheetBody') && UI.elPrep && ev.target.type !== 'checkbox' && ev.target.tagName !== 'SELECT') elPrepInput(ev.target); });
+document.addEventListener('change', (ev) => { if (ev.target.closest && ev.target.closest('#sheetBody') && UI.elPrep && (ev.target.type === 'checkbox' || ev.target.tagName === 'SELECT')) elPrepInput(ev.target); });
+
 const EL = { list: [], cur: null, done: {}, mode: 'play', edit: null, open: new Set(), target: null, objTarget: store.get('el-objtarget', '__lage'), loaded: null, saveT: null, confirm: null, busy: null };
 const elId = (p) => p + Date.now().toString(36).slice(-6) + Math.random().toString(36).slice(2, 5);
 const elScen = () => EL.list.find((s) => s.id === EL.cur) || EL.list[0] || null;
@@ -4604,6 +4791,7 @@ function elNormalize(s) {
       dateien: elNormDateien(e.dateien),
       objekte: (e.objekte || []).filter((d) => d && d.c && ['p', 'l', 'f'].includes(d.g)),
       aktion: elNormAktion(e.aktion),
+      vorschlaege: elNormVorschlaege(e.vorschlaege),
     })) });
   }
   return o;
@@ -4712,6 +4900,7 @@ function elCard(s, r, e, no, run) {
     ${e.dateien.length ? `<div class="el-files">${e.dateien.map((f) => `<button class="el-file" data-act="doc-open" data-url="${esc(f.data || '')}" data-name="${esc(f.name)}" ${f.data ? '' : 'disabled'}><i>${docIcon(f.name, f.mime)}</i>${esc(f.name)}</button>`).join('')}</div>` : ''}
     ${e.objekte.length ? `<div class="el-obj">${elObjIcons(e.objekte)}<span>${e.objekte.length} Objekt${e.objekte.length === 1 ? '' : 'e'} für die ${EL.objTarget === LAGE_ID ? 'Gesamtlage' : 'Lagekarte des Einsatzes'}</span></div>` : ''}
     ${a ? `<div class="el-akt">${esc(elAktionText(a))}</div>` : ''}
+    ${(e.vorschlaege || []).length ? `<div class="el-akt el-vs">Lagekarte (Vorschlag): ${esc(e.vorschlaege.map((v) => v.titel || v.typ).join(', '))}</div>` : ''}
     <div class="el-act"><span class="hint">${esc(where)}</span>
       ${d.length ? `<button class="btn sm sec" data-act="el-undo" data-id="${e.id}" title="Als offen markieren">↺</button>` : `<button class="btn sm sec" data-act="el-check" data-id="${e.id}" title="Ohne Einspielen als erledigt markieren">Abhaken</button>`}
       <button class="btn sm ${d.length ? 'sec' : ''}" data-act="el-play" data-id="${e.id}" ${can ? '' : 'disabled'}>${busy ? 'Wird eingespielt …' : d.length ? 'Erneut einspielen' : 'Einspielen'}</button></div>
@@ -4816,23 +5005,31 @@ function elMarkDone(f, entry) {
   elSave();
   if (ONLINE) ELDB.set('done', EL.done); // Fortschritt sofort sichern
 }
-async function elPlay(eid, preInc) {
+async function elPlay(eid, preInc, ov) {
   const f = elFind(eid);
   if (!f) return;
-  const e = f.e, a = e.aktion;
+  // ov: Änderungen aus dem Einspielen-Dialog (nur für dieses Mal, das Szenario bleibt unverändert)
+  const e0 = f.e;
+  const e = ov ? Object.assign({}, e0, {
+    absender: ov.absender, text: ov.text,
+    bilder: e0.bilder.filter((x) => ov.bilder.includes(x.id)), dateien: e0.dateien.filter((x) => ov.dateien.includes(x.id)),
+    objekte: ov.objekte ? e0.objekte : [],
+  }) : e0;
+  const a = ov ? ov.aktion : e0.aktion;
+  const lage = (ov && ov.lage) || [];
   const hasMsg = !!(e.text || e.bilder.length || e.dateien.length);
-  if (!hasMsg && !e.objekte.length && !a) { toast('Diese Einlage ist noch leer.'); return; }
+  if (!hasMsg && !e.objekte.length && !a && !lage.length) { toast('Es ist nichts zum Einspielen ausgewählt.'); return; }
   EL.busy = eid; renderEL(true);
   try {
-    let incId = preInc || elTargetFor(f.s, f.r);
+    let incId = preInc || (ov && ov.target) || elTargetFor(f.s, f.r);
     // 1) Einsatz anlegen (falls die Einlage einen auslöst)
     if (a && a.typ === 'einsatz' && !preInc) {
-      const inc = await elCreateIncident(a, (newInc) => elPlay(eid, newInc.id));
+      const inc = await elCreateIncident(a, (newInc) => elPlay(eid, newInc.id, ov));
       if (!inc) return; // Dialog ist offen, geht nach dem Anlegen weiter
       incId = inc.id;
     }
     const inc0 = sim.incById(incId);
-    const needInc = hasMsg || (a && (a.typ === 'nachalarm' || a.typ === 'erhoehen')) || (e.objekte.length && EL.objTarget !== LAGE_ID);
+    const needInc = hasMsg || lage.length || (a && (a.typ === 'nachalarm' || a.typ === 'erhoehen')) || (e.objekte.length && EL.objTarget !== LAGE_ID);
     if (needInc && (!inc0 || inc0.status !== 'laufend')) { toast('Bitte oben einen laufenden Einsatz als Ziel wählen.'); return; }
     // 2) Meldung, Bilder, Dateien
     if (e.text) await api.log(sim.incById(incId), (e.absender ? e.absender + ': ' : '') + e.text, 'lage');
@@ -4847,14 +5044,20 @@ async function elPlay(eid, preInc) {
       await api.photo(sim.incById(incId), src, d.name, { doc: true, name: d.name, mime: d.mime });
     }
     if (e.objekte.length) await addDrawings(EL.objTarget === LAGE_ID ? LAGE_ID : incId, e.objekte);
+    // Lageelemente aus dem Dialog in die Lagekarte des Einsatzes
+    if (lage.length) {
+      const i1 = sim.incById(incId);
+      const objs = lage.map((v) => elVorschlagObj(v, i1));
+      await addDrawings(incId, objs);
+    }
     // 3) Aktion
     if (a && a.typ === 'nachalarm') { let miss = 0; for (const k of a.kinds) { const ok = await api.nachalarm(sim.incById(incId), k); if (!ok) miss++; } if (miss) toast(`${miss} Fahrzeug${miss > 1 ? 'e' : ''} nicht verfügbar – steht im Verlauf`); }
     if (a && a.typ === 'erhoehen' && AAO[a.stw]) await api.erhoehen(sim.incById(incId), a.stw);
     if (a && a.typ === 'rdlast') await api.rdlast(a.anzahl, a.minuten);
     const inc = sim.incById(incId);
-    const title = [inc && (needInc || (a && a.typ === 'einsatz')) ? inc.title : '', a && a.typ === 'rdlast' ? 'RD-Last' : '', e.objekte.length && EL.objTarget === LAGE_ID ? 'Gesamtlage' : ''].filter(Boolean).join(' + ');
+    const title = [inc && (needInc || (a && a.typ === 'einsatz')) ? inc.title : '', a && a.typ === 'rdlast' ? 'RD-Last' : '', e.objekte.length && EL.objTarget === LAGE_ID ? 'Gesamtlage' : '', lage.length ? lage.length + ' Lageelement' + (lage.length > 1 ? 'e' : '') : ''].filter(Boolean).join(' + ');
     elMarkDone(f, { t: sim.now, inc: inc ? incId : null, title });
-    toast(`Eingespielt: ${e.titel || 'Einlage'}`);
+    toast(`Eingespielt: ${e0.titel || 'Einlage'}`);
   } finally {
     EL.busy = null;
     render(true);
@@ -4935,7 +5138,9 @@ document.addEventListener('click', async (ev) => {
     case 'el-check': { const f = elFind(b.dataset.id); if (f) elMarkDone(f, { t: sim.now, inc: null, title: 'abgehakt', skip: true }); renderEL(true); return; }
     case 'el-undo': { const f = elFind(b.dataset.id); if (f && EL.done[f.s.id]) { delete EL.done[f.s.id][f.e.id]; elSave(); if (ONLINE) ELDB.set('done', EL.done); } renderEL(true); return; }
     case 'el-fdel': { const f = elFind(EL.edit); if (f) f.e.dateien = f.e.dateien.filter((x) => x.id !== b.dataset.fid); break; }
-    case 'el-play': await elPlay(b.dataset.id); return;
+    case 'el-play': elPrep(b.dataset.id); return;
+    case 'el-psend': await elPrepSend(); return;
+    case 'el-padd': { const P = UI.elPrep; if (!P) return; const g = b.dataset.g; const inc = sim.incById(P.target); const v = { id: 'v' + Date.now(), on: true, g, typ: g === 'f' ? 'Gefahrenbereich' : 'Markanter Punkt', titel: '', dx: 40, dy: 40, r: 100 }; if (inc) { const p = elOffset(inc.pos, 40, 40); v.lat = p[0]; v.lng = p[1]; } P.lage.push(v); elPrepRefresh(); return; }
     case 'el-new': {
       const n = elNormalize({ name: 'Neues Szenario', reiter: [{ name: 'Phase 1', einlagen: [] }] });
       EL.list.push(n); EL.cur = n.id; EL.mode = 'edit'; EL.edit = null; EL.open.clear(); break;
