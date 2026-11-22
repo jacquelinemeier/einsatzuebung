@@ -759,6 +759,10 @@ input, select, textarea { font: inherit; }
 /* ---------- Grundlayout ---------- */
 .app { position: fixed; top: calc(54px + env(safe-area-inset-top, 0px)); left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: 290px 1fr; }
 .app.nolist { grid-template-columns: 1fr; }
+.app { grid-template-rows: minmax(0, 1fr); }
+.app > * { min-height: 0; }
+.list { min-height: 0; overflow: hidden; }
+.list-body { min-height: 0; }
 .app.nolist .list { display: none; }
 
 /* ---------- Einsatzliste ---------- */
@@ -2303,7 +2307,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-20 08:54';
+const APP_VERSION = '2026-11-22 08:46';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
