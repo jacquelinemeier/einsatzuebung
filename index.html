@@ -2330,7 +2330,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-22 11:34';
+const APP_VERSION = '2026-11-22 12:00';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -4566,6 +4566,19 @@ async function processPlan() {
   } finally { planBusy = false; }
 }
 
+// Reiter auf-/zuklappen: selbst steuern (der Browser-„toggle“ geht verloren, wenn die Liste gerade neu gezeichnet wird)
+document.addEventListener('click', (ev) => {
+  const sum = ev.target.closest && ev.target.closest('#el details.el-r > summary');
+  if (!sum) return;
+  ev.preventDefault();
+  const d = sum.parentElement, rid = d.dataset.rid, willOpen = !d.open;
+  EL.open.delete(rid); EL.open.delete('!' + rid);
+  EL.open.add(willOpen ? rid : '!' + rid);
+  d.open = willOpen;
+  const box = $('#el'); if (box) box.__h = null;
+  renderEL(true);
+}, true);
+
 const EL = { list: [], cur: null, done: {}, mode: 'play', edit: null, open: new Set(), target: null, objTarget: store.get('el-objtarget', '__lage'), loaded: null, saveT: null, confirm: null, busy: null };
 const elId = (p) => p + Date.now().toString(36).slice(-6) + Math.random().toString(36).slice(2, 5);
 const elScen = () => EL.list.find((s) => s.id === EL.cur) || EL.list[0] || null;
@@ -4666,7 +4679,7 @@ function elPlayView(s, run) {
   const reiter = s.reiter.map((r, ri) => {
     const n = r.einlagen.filter((e) => elDone(s.id, e.id).length).length;
     const due = r.einlagen.filter((e) => e.zeit && e.zeit <= hm && !elDone(s.id, e.id).length).length;
-    const open = EL.open.has(r.id) || (EL.open.size === 0 && ri === 0);
+    const open = EL.open.has(r.id) || (ri === 0 && !EL.open.has('!' + r.id));
     const own = elIncFor(s, r);
     const ownInc = own && sim.incById(own);
     return `<details class="el-r" data-rid="${r.id}" ${open ? 'open' : ''}><summary><span>${esc(r.name)}</span>${due ? `<em class="el-due">${due} fällig</em>` : ''}<small class="${n === r.einlagen.length && n ? 'all' : ''}">${n}/${r.einlagen.length}</small></summary>
@@ -5007,7 +5020,6 @@ document.addEventListener('input', (ev) => {
 // Reiter auf/zu merken
 document.addEventListener('toggle', (ev) => {
   const d = ev.target;
-  if (d.classList && d.classList.contains('el-r')) { if (d.open) EL.open.add(d.dataset.rid); else EL.open.delete(d.dataset.rid); if (!EL.open.size && !d.open) EL.open.add('_'); }
   if (d.classList && d.classList.contains('lk-grp')) { if (d.open) LK.open.add(d.dataset.cat); else LK.open.delete(d.dataset.cat); }
 }, true);
 
