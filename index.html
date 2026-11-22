@@ -1214,7 +1214,8 @@ input, select, textarea { font: inherit; }
 .el-h select { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 8px; border: 0; font-size: 14px; font-weight: 600; background: #fff; color: var(--ink); }
 .el-h .btn.sec { background: rgba(255,255,255,.12); color: #fff; border-color: rgba(255,255,255,.3); }
 .el-h .btn.primary { background: #ffe400; color: #1b1f33; }
-.el-b { overflow-y: auto; overflow-x: hidden; padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-content: start; }
+.el-b { overflow-y: auto; overflow-x: hidden; padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; gap: 10px; align-content: start; }
+.el-b > * { min-height: max-content; }
 .el .grp2 { grid-template-columns: minmax(0, 1fr); }
 .el-c, .el-r { min-width: 0; }
 .el-tgt select { font-weight: 600; }
@@ -2330,7 +2331,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-22 12:00';
+const APP_VERSION = '2026-11-22 12:09';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
