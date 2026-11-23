@@ -1242,6 +1242,7 @@ body.paused #clock { opacity: .55; }
 .av-leg i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
 .ar-tbl select { width: 100%; } .ar-tbl tr.miss td:first-child b { color: #c92a2a; }
 .ar-frei { align-items: center; } .ar-frei .hint { flex: 1; margin: 0; }
+.fl-cats { grid-column: 1 / -1; justify-self: start; } .fl-cats small { opacity: .65; font-weight: 500; margin-left: 2px; }
 .el-b { overflow-y: auto; overflow-x: hidden; padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; gap: 10px; align-content: start; }
 .el-b > * { min-height: max-content; }
 .el .grp2 { grid-template-columns: minmax(0, 1fr); }
@@ -4689,7 +4690,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-23 11:07';
+const APP_VERSION = '2026-11-23 11:16';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -5689,7 +5690,14 @@ function renderFleet() {
   const tabs = `<div class="fl-tabs seg"><button data-act="fl-tab" data-t="eigen" class="${!UI.fleetTab || UI.fleetTab === 'eigen' ? 'on' : ''}">Eigene Fahrzeuge</button><button data-act="fl-tab" data-t="av" class="${UI.fleetTab === 'av' ? 'on' : ''}">Verfügbarkeit</button><button data-act="fl-tab" data-t="uk" class="${UI.fleetTab === 'uk' ? 'on' : ''}">Überörtliche Kräfte${nUk ? ` <span class="badge">${nUk}</span>` : ''}</button></div>`;
   if (UI.fleetTab === 'uk') { setHTML($('#vFleet'), tabs + ukHTML()); return; }
   if (UI.fleetTab === 'av') { setHTML($('#vFleet'), tabs + avHTML()); return; }
-  let h = tabs + `<div class="legend">${[2, 1, 'A', 3, 4, 7, 8, 6].map((s) => `<span>${stChip(s)}${STATUS_TEXT[s]}</span>`).join('')}</div>`;
+  const catOf = (g) => (g.ff ? 'FF' : /^(Rettungswache|KT AG)/.test(g.t) ? 'RD' : 'FW');
+  const FC = UI.fleetCat || (UI.fleetCat = store.get('fl-cat', 'alle'));
+  const shown = groups.filter((g) => FC === 'alle' || catOf(g) === FC);
+  const cnt = (c) => groups.filter((g) => c === 'alle' || catOf(g) === c).reduce((n, g) => [n[0] + g.list.filter(free).length, n[1] + g.list.length], [0, 0]);
+  const catBtn = (c, l) => { const [f, n] = cnt(c); return `<button data-act="fl-cat" data-c="${c}" class="${FC === c ? 'on' : ''}">${l} <small>${f}/${n}</small></button>`; };
+  const cats = `<div class="fl-cats seg">${catBtn('alle', 'Alle')}${catBtn('FW', 'Feuerwehr')}${catBtn('RD', 'Rettungsdienst')}${catBtn('FF', 'Freiwillige Feuerwehr')}</div>`;
+  groups.length = 0; groups.push(...shown);
+  let h = tabs + cats + `<div class="legend">${[2, 1, 'A', 3, 4, 7, 8, 6].map((s) => `<span>${stChip(s)}${STATUS_TEXT[s]}</span>`).join('')}</div>`;
   for (const g of groups) {
     h += `<div class="grp"><h4>${esc(g.t)} <span>${g.list.filter(free).length}/${g.list.length} frei</span></h4>` + g.list.map((v) => {
       const inc = sim.incById(v.incidentId || v.transportInc);
@@ -5699,7 +5707,7 @@ function renderFleet() {
       return `<div class="fv" data-act="veh" data-vid="${v.id}">${stChip(v.status)}<b>${esc(v.name)}</b><span class="x">${esc(x)}</span></div>`;
     }).join('') + '</div>';
   }
-  h += cuFleetHTML();
+  if (FC === 'alle') h += cuFleetHTML();
   setHTML($('#vFleet'), h);
 }
 
@@ -7837,6 +7845,7 @@ document.addEventListener('click', async (e) => {
     case 'cu-del': { const ci = sim.incById(b.dataset.inc); if (ci) { await api.customSet(ci, b.dataset.id, { del: true }); closeSheet(); render(true); } break; }
     case 'zs-f': UI.zsF = UI.zsF === +b.dataset.i ? null : +b.dataset.i; render(true); break;
     case 'fl-tab': UI.fleetTab = b.dataset.t; render(true); break;
+    case 'fl-cat': UI.fleetCat = b.dataset.c; store.set('fl-cat', UI.fleetCat); render(true); break;
     case 'lk-open': openLk(); break;
     case 'lk-lage': openLk(LAGE_ID); break;
     case 'lk-close': closeLk(); break;
