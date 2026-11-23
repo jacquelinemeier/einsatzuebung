@@ -4664,7 +4664,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-23 10:36';
+const APP_VERSION = '2026-11-23 10:42';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -4836,7 +4836,7 @@ const api = {
   async setStatus(v, st) { if (REMOTE) return post({ type: 'status', vid: v.id, st }); return sim.setStatus(v, st); },
   async pause(on) { if (REMOTE) await post({ type: 'pause', on: !!on }); else sim.paused = !!on; },
   async clock() { if (REMOTE) await post({ type: 'clock' }); else { sim.now = Date.now(); sim.speed = 1; } },
-  async reset() { if (REMOTE) await post({ type: 'reset' }); else { sim.reset(); sim.now = Date.now(); sim.planQ = []; } },
+  async reset() { if (REMOTE) await post({ type: 'reset' }); else { sim.reset(); sim.now = Date.now(); sim.planQ = []; sim.resetNr = (sim.resetNr || 0) + 1; } },
   async photo(inc, data, caption, meta) {
     const m = meta && meta.doc ? { doc: true, name: String(meta.name || 'Datei'), mime: String(meta.mime || '') } : null;
     let url = data;
@@ -4876,6 +4876,9 @@ for (const k of Object.keys(api)) {
 function applySnap(s) {
   if (s.v !== APP_VERSION && !NET.verWarned) { NET.verWarned = true; alertVersion(s.v); }
   if (s.savedAt) { NET.lastSavedAt = Math.max(NET.lastSavedAt || 0, s.savedAt); NET.snapNow = s.now; NET.snapAt = s.savedAt; }
+  // Übung wurde (auf einem anderen Gerät) zurückgesetzt → Einlagen-Haken auch hier leeren
+  if ((s.resetNr || 0) !== (sim.resetNr || 0) && sim.resetNr != null && typeof EL !== 'undefined') { EL.done = {}; if (typeof renderEL === 'function') renderEL(true); }
+  sim.resetNr = s.resetNr || 0;
   sim.now = s.now; sim.speed = s.speed; sim.paused = !!s.paused; sim.auto = s.auto; sim.nextNr = s.nextNr; sim.routing = s.routing;
   sim.vehicles = s.vehicles; sim.incidents = s.incidents; sim.planQ = Array.isArray(s.planQ) ? s.planQ : [];
   sim.reindex();
@@ -4903,7 +4906,7 @@ function alertVersion(other) {
 /* ---------- Zentrale (nur Übungsleitung) ---------- */
 function buildSnap() {
   return {
-    now: sim.now, speed: sim.speed, paused: !!sim.paused, auto: sim.auto, nextNr: sim.nextNr, routing: sim.routing, lage: sim.lage, incidents: sim.incidents, planQ: sim.planQ || [],
+    now: sim.now, speed: sim.speed, paused: !!sim.paused, resetNr: sim.resetNr || 0, auto: sim.auto, nextNr: sim.nextNr, routing: sim.routing, lage: sim.lage, incidents: sim.incidents, planQ: sim.planQ || [],
     // Straßenverläufe bleiben in der Zentrale, die Geräte bekommen nur die Positionen
     vehicles: sim.vehicles.map((v) => (v.job && v.job.path ? Object.assign({}, v, { job: Object.assign({}, v.job, { path: undefined, cum: undefined }) }) : v)),
     savedAt: Date.now(), v: APP_VERSION,
@@ -5035,7 +5038,7 @@ function doAction(b) {
     case 'auto': applyAuto(b); return { ok: true };
     case 'clock': sim.now = Date.now(); sim.speed = 1; return { ok: true };
     case 'status': { const v = sim.byId(b.vid); if (!v) return { ok: false, error: 'Fahrzeug nicht gefunden' }; return sim.setStatus(v, b.st); }
-    case 'reset': sim.reset(); sim.now = Date.now(); sim.lage.drawings = []; sim.planQ = []; return { ok: true };
+    case 'reset': sim.reset(); sim.now = Date.now(); sim.lage.drawings = []; sim.planQ = []; sim.resetNr = (sim.resetNr || 0) + 1; return { ok: true };
     case 'photo': {
       if (!/^https:\/\//.test(String(b.data || ''))) return { ok: false, error: 'Datei fehlt' };
       const m = b.doc ? { doc: true, name: String(b.name || 'Datei').slice(0, 200), mime: String(b.mime || '').slice(0, 100) } : {};
@@ -5894,7 +5897,7 @@ function openUL() {
       <button class="btn sec" data-act="rand-inc" data-w="rd">Zufallseinsatz RD jetzt</button></div>
       <div class="grp2"><h5>Manuell einspielen</h5><button class="btn" data-act="new-inc">Einsatz anlegen …</button></div>
       <div class="grp2"><h5>Uhr</h5><div class="seg">${[1, 2, 5, 10].map((s) => `<button data-act="speed" data-s="${s}" class="${sim.speed === s ? 'on' : ''}">${s === 1 ? 'Echtzeit' : '×' + s}</button>`).join('')}</div><div class="hint">Für die Übung Echtzeit verwenden. Zeitraffer beschleunigt Anfahrt, Einsatzdauer und Automatik.</div></div>
-      <div class="grp2"><h5>Übung</h5>${UI.confirmReset ? `<div class="confirm"><b>Übung zurücksetzen?</b><span>Alle Einsätze werden gelöscht, alle Fahrzeuge stehen wieder auf der Wache.</span><div class="row"><button class="btn sec" data-act="reset-no">Abbrechen</button><button class="btn red" data-act="reset-yes">Zurücksetzen</button></div></div>` : '<button class="btn sec" data-act="reset">Übung zurücksetzen</button>'}
+      <div class="grp2"><h5>Übung</h5>${UI.confirmReset ? `<div class="confirm"><b>Übung zurücksetzen?</b><span>Alle Einsätze werden gelöscht, alle Fahrzeuge stehen wieder auf der Wache, alle Einlagen werden wieder auf „offen“ gesetzt.</span><div class="row"><button class="btn sec" data-act="reset-no">Abbrechen</button><button class="btn red" data-act="reset-yes">Zurücksetzen</button></div></div>` : '<button class="btn sec" data-act="reset">Übung zurücksetzen</button>'}
       <div class="hint">Straßenrouting: ${sim.routing === false ? 'offline – Fahrzeuge fahren auf direktem Weg (Luftlinie)' : sim.routing ? 'online (OpenStreetMap / OSRM)' : 'noch nicht geprüft'}</div>
       <div class="hint">Geocodierung: ${GEO.ok === false ? 'offline – es werden die hinterlegten Näherungskoordinaten genutzt' : GEO.ok ? 'online (Photon/OpenStreetMap)' : 'noch nicht geprüft'}</div></div>
       ${ulExtra()}
@@ -7764,7 +7767,10 @@ document.addEventListener('click', async (e) => {
     case 'reset-yes':
       UI.confirmReset = false; await api.reset(); sim.lage.drawings = []; if (!REMOTE) api.lage([]); UI.sel = null; $('#lk').hidden = true; $('#ab').hidden = true;
       for (const m of [dMap, lMap]) if (m) { for (const [, x] of m.__inc) m.removeLayer(x); m.__inc.clear(); for (const [, x] of m.__veh) m.removeLayer(x); m.__veh.clear(); }
-      refreshUL(); render(true); toast('Übung zurückgesetzt'); break;
+      // Einlagen: alle Haken zurück, Dialog zu
+      EL.done = {}; EL.busy = null; UI.elPrep = null; try { await ELDB.set('done', {}); } catch (e) { console.error(e); }
+      if (typeof renderEL === 'function') renderEL(true);
+      refreshUL(); render(true); toast('Übung zurückgesetzt – Einlagen wieder offen'); break;
     case 'cfg-save':
       for (const k of ['karte', 'alkisUrl', 'alkisLayers', 'dopUrl', 'dopLayers']) MAPCFG[k] = $('#cfg_' + k).value.trim();
       store.set('fa-mapcfg', { karte: MAPCFG.karte, alkisUrl: MAPCFG.alkisUrl, alkisLayers: MAPCFG.alkisLayers, dopUrl: MAPCFG.dopUrl, dopLayers: MAPCFG.dopLayers });
