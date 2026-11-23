@@ -1230,6 +1230,18 @@ input, select, textarea { font: inherit; }
 .pausebtn.on { background: #ffd43b; color: #2b2300; border-color: #ffd43b; }
 .pauseband { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); z-index: 900; background: #ffd43b; color: #2b2300; font-weight: 700; padding: 6px 16px; border-radius: 99px; box-shadow: 0 2px 10px rgba(0,0,0,.2); pointer-events: none; font-size: 14px; }
 body.paused #clock { opacity: .55; }
+.av-wrap { padding: 4px 0 20px; grid-column: 1 / -1; }
+.pausebtn { white-space: nowrap; }
+.av-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; margin: 12px 0; }
+.av-card { background: var(--card, #fff); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; justify-items: center; gap: 8px; }
+.av-card h4 { margin: 0; font-size: 18px; }
+.av-card.low { border-color: #f59f00; box-shadow: 0 0 0 2px #ffe8cc inset; }
+.av-card.none { border-color: #e03131; box-shadow: 0 0 0 2px #ffe3e3 inset; }
+.av-leg { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13.5px; width: 100%; }
+.av-leg li { display: flex; align-items: center; gap: 8px; } .av-leg li b { margin-left: auto; }
+.av-leg i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.ar-tbl select { width: 100%; } .ar-tbl tr.miss td:first-child b { color: #c92a2a; }
+.ar-frei { align-items: center; } .ar-frei .hint { flex: 1; margin: 0; }
 .el-b { overflow-y: auto; overflow-x: hidden; padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; gap: 10px; align-content: start; }
 .el-b > * { min-height: max-content; }
 .el .grp2 { grid-template-columns: minmax(0, 1fr); }
@@ -4256,11 +4268,24 @@ function createSim() {
     const kinds = AAO[inc.stw].slice();
     for (const m of item.minus || []) { const i = kinds.indexOf(m); if (i >= 0) kinds.splice(i, 1); }
     kinds.push(...(item.plus || []));
-    if (!item.nodispatch) {
+    if (Array.isArray(o.units)) {
+      // von der Leitung geprüfter / geänderter Vorschlag
+      const names = [];
+      for (const u of o.units) {
+        const v = byId(u.vid);
+        if (!v || !isFree(v)) { inc.missing.push(u.kind); log(inc, `${v ? v.name : (KIND_LABEL[u.kind] || u.kind)}: nicht mehr frei – nicht besetzt`, 'warn'); continue; }
+        const a = u.attach ? byId(u.attach) : null;
+        names.push(alarm({ v, attach: a && !a.incidentId && !a.carriedBy ? a : null, force: u.force || undefined }, inc, u.kind));
+      }
+      for (const k of o.missing || []) { inc.missing.push(k); log(inc, `${KIND_LABEL[k] || k}: kein Fahrzeug verfügbar – nicht besetzt`, 'warn'); }
+      if (names.length) log(inc, `Alarmiert: ${names.join(', ')}`, 'alarm');
+      if ((o.ext || []).length) log(inc, `Nicht im Übungsbestand (nur Info): ${o.ext.join(', ')}`, 'info');
+    } else if (!item.nodispatch) {
       dispatch(inc, kinds, null);
       const ff = ffKinds(inc, item);
       if (ff.length) dispatch(inc, ff, 'FF nach AAO');
     }
+    for (const c of o.frei || []) addCustom(inc, c);
     emit('incident', inc);
     return inc;
   }
@@ -4664,7 +4689,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-23 10:42';
+const APP_VERSION = '2026-11-23 11:07';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -4797,7 +4822,7 @@ const api = {
   async create(o) {
     if (!REMOTE) return sim.createIncident(o);
     const idx = o.item ? CATALOG[o.key].items.indexOf(o.item) : -1;
-    const j = await post({ type: 'create', key: o.key, itemIdx: idx < 0 ? null : idx, item: idx < 0 && o.item ? o.item : undefined, addr: o.addr, pos: o.pos, duration: o.duration });
+    const j = await post({ type: 'create', key: o.key, itemIdx: idx < 0 ? null : idx, item: idx < 0 && o.item ? o.item : undefined, addr: o.addr, pos: o.pos, duration: o.duration, units: o.units, missing: o.missing, ext: o.ext, frei: o.frei });
     return j.ok ? sim.incById(j.id) : null;
   },
   async nachalarm(inc, kind, vid, le) { return REMOTE ? (await post({ type: 'nachalarm', incId: inc.id, kind, vid, le })).ok : sim.nachalarm(inc, kind, vid, le); },
@@ -5017,7 +5042,12 @@ function doAction(b) {
       const cat = CATALOG[b.key];
       if (!cat || !b.addr || !Array.isArray(b.pos)) return { ok: false, error: 'Ungültiger Einsatz' };
       const item = b.itemIdx != null ? cat.items[b.itemIdx] : cleanItem(b.item);
-      const i = sim.createIncident({ key: b.key, item, addr: b.addr, pos: b.pos, duration: b.duration });
+      const man = Array.isArray(b.units) ? {
+        units: b.units.slice(0, 80).filter((u) => u && typeof u.vid === 'string').map((u) => ({ vid: u.vid, kind: String(u.kind || ''), attach: typeof u.attach === 'string' ? u.attach : null, force: typeof u.force === 'string' ? u.force : null })),
+        missing: (Array.isArray(b.missing) ? b.missing : []).slice(0, 40).map(String), ext: (Array.isArray(b.ext) ? b.ext : []).slice(0, 20).map(String),
+      } : {};
+      const frei = (Array.isArray(b.frei) ? b.frei : []).slice(0, 30).filter((c) => c && c.name).map((c) => ({ name: String(c.name).slice(0, 60), org: String(c.org || 'EXT'), stage: +c.stage || 0, auto: !!c.auto, eta: +c.eta || 0 }));
+      const i = sim.createIncident(Object.assign({ key: b.key, item, addr: b.addr, pos: b.pos, duration: b.duration, frei }, man));
       return { ok: true, id: i.id };
     }
     case 'nachalarm': return { ok: !!sim.nachalarm(inc, b.kind, b.vid, b.le) };
@@ -5389,7 +5419,13 @@ async function newIncident(o) {
     const g = await geocodeAddress(addr.street, addr.plz, 2500);
     if (g) pos = g;
   }
-  const inc = await api.create({ key: o.key, item, addr, pos, duration: o.duration });
+  let man = {};
+  if (o.review && CAN_LEAD) {
+    const r = await reviewAlarm({ key: o.key, item, addr, pos });
+    if (!r) { toast('Alarmierung abgebrochen'); return null; }
+    man = r;
+  }
+  const inc = await api.create(Object.assign({ key: o.key, item, addr, pos, duration: o.duration }, man));
   if (!inc) return null;
   if (o.select || !UI.sel) selectInc(inc.id);
   render(true);
@@ -5650,8 +5686,9 @@ function renderFleet() {
   groups.push({ t: 'Sondereinheiten', ff: true, list: V.filter((v) => v.block && v.se) });
   const free = (v) => v.kind === 'AB' ? !v.incidentId : sim.isFree(v);
   const nUk = sim.incidents.reduce((n, i) => n + (i.custom || []).filter((c) => c.stage < 4).length, 0);
-  const tabs = `<div class="fl-tabs seg"><button data-act="fl-tab" data-t="eigen" class="${UI.fleetTab !== 'uk' ? 'on' : ''}">Eigene Fahrzeuge</button><button data-act="fl-tab" data-t="uk" class="${UI.fleetTab === 'uk' ? 'on' : ''}">Überörtliche Kräfte${nUk ? ` <span class="badge">${nUk}</span>` : ''}</button></div>`;
+  const tabs = `<div class="fl-tabs seg"><button data-act="fl-tab" data-t="eigen" class="${!UI.fleetTab || UI.fleetTab === 'eigen' ? 'on' : ''}">Eigene Fahrzeuge</button><button data-act="fl-tab" data-t="av" class="${UI.fleetTab === 'av' ? 'on' : ''}">Verfügbarkeit</button><button data-act="fl-tab" data-t="uk" class="${UI.fleetTab === 'uk' ? 'on' : ''}">Überörtliche Kräfte${nUk ? ` <span class="badge">${nUk}</span>` : ''}</button></div>`;
   if (UI.fleetTab === 'uk') { setHTML($('#vFleet'), tabs + ukHTML()); return; }
+  if (UI.fleetTab === 'av') { setHTML($('#vFleet'), tabs + avHTML()); return; }
   let h = tabs + `<div class="legend">${[2, 1, 'A', 3, 4, 7, 8, 6].map((s) => `<span>${stChip(s)}${STATUS_TEXT[s]}</span>`).join('')}</div>`;
   for (const g of groups) {
     h += `<div class="grp"><h4>${esc(g.t)} <span>${g.list.filter(free).length}/${g.list.length} frei</span></h4>` + g.list.map((v) => {
@@ -5662,6 +5699,7 @@ function renderFleet() {
       return `<div class="fv" data-act="veh" data-vid="${v.id}">${stChip(v.status)}<b>${esc(v.name)}</b><span class="x">${esc(x)}</span></div>`;
     }).join('') + '</div>';
   }
+  h += cuFleetHTML();
   setHTML($('#vFleet'), h);
 }
 
@@ -5695,7 +5733,7 @@ function openSheet(title, body, opts) {
   UI.sheetLive = opts.live || null;
   if (opts.after) opts.after();
 }
-function closeSheet() { $('#ov').hidden = true; UI.sheetLive = null; UI.elPrep = null; if (UI.epMap) { UI.epMap.remove(); UI.epMap = null; } if (UI.niMap) { UI.niMap.remove(); UI.niMap = null; } }
+function closeSheet() { if (UI.ar) { const A = UI.ar; UI.ar = null; A.resolve(null); } $('#ov').hidden = true; UI.sheetLive = null; UI.elPrep = null; if (UI.epMap) { UI.epMap.remove(); UI.epMap = null; } if (UI.niMap) { UI.niMap.remove(); UI.niMap = null; } }
 
 function openLog() {
   const id = UI.sel;
@@ -5845,7 +5883,7 @@ async function submitNew() {
   const item = ovr ? ovr.item : iv === '' ? null : CATALOG[key].items[+iv];
   const dsel = $('#niDur').value;
   const duration = dsel === 'open' ? 'open' : dsel === 'min' ? Math.max(1, +$('#niMin').value || 30) : 'auto';
-  const o = { key, item, duration, select: true };
+  const o = { key, item, duration, select: true, review: true };
   if (UI.niMode === 'list') {
     const a = ALL_ADDR.concat(BAB_ADDR)[+$('#niList').value];
     o.addr = Object.assign({}, a, { pos: a.pos.slice() });
@@ -6930,7 +6968,7 @@ async function elCreateIncident(a, after) {
     $('#sheetBody').prepend(h);
     return null;
   }
-  return newIncident({ key: a.key, item, addr, pos, duration: a.dauer === 'auto' ? 'auto' : 'open', select: true });
+  return newIncident({ key: a.key, item, addr, pos, duration: a.dauer === 'auto' ? 'auto' : 'open', select: true, review: !a.ohneAlarm });
 }
 // Datei oder Bild öffnen (auch Daten-Links am Einzelplatz)
 async function openDoc(url, name) {
@@ -7153,6 +7191,117 @@ function elPrepInput(t) {
 }
 document.addEventListener('input', (ev) => { if (ev.target.closest && ev.target.closest('#sheetBody') && UI.elPrep && ev.target.type !== 'checkbox' && ev.target.tagName !== 'SELECT') elPrepInput(ev.target); });
 document.addEventListener('change', (ev) => { if (ev.target.closest && ev.target.closest('#sheetBody') && UI.elPrep && (ev.target.type === 'checkbox' || ev.target.tagName === 'SELECT')) elPrepInput(ev.target); });
+
+/* ---------- Alarmierung prüfen: Fahrzeugvorschlag ansehen, ändern, Freitext ergänzen ---------- */
+function previewAlarm(o) {
+  // Probelauf in einer Kopie der Simulation – am echten Stand ändert sich nichts
+  const t = createSim();
+  t.setRouter(null);
+  t.now = sim.now; t.nextNr = sim.nextNr;
+  t.vehicles = JSON.parse(JSON.stringify(sim.vehicles));
+  t.incidents = JSON.parse(JSON.stringify(sim.incidents));
+  t.reindex();
+  const inc = t.createIncident({ key: o.key, item: o.item, addr: o.addr, pos: o.pos, duration: 'open' });
+  const units = inc.units.map((u) => { const v = t.byId(u.vid); return { vid: u.vid, kind: u.kind, attach: v && v.carry || null, force: v && v.job && v.job.force || null }; });
+  const extLog = inc.log.find((l) => /^Nicht im Übungsbestand/.test(l.text));
+  const ext = extLog ? extLog.text.replace(/^[^:]*:\s*/, '').split(/,\s*/).filter(Boolean) : [];
+  return { title: inc.title, units, missing: inc.missing.slice(), ext };
+}
+const AR_BASE = (k) => (k.startsWith('WLF:') ? ['WLF'] : k === 'HLF' ? ['HLF', 'LF'] : k === 'NKTW' ? ['KTW', 'RTW'] : k === 'SW2000' ? ['LE'] : [k]);
+function arVehLabel(v, pos) { return `${v.name}${pos && v.pos ? ` (${distKm(v.pos, pos).toFixed(1)} km)` : ''}`; }
+function reviewAlarm(o) {
+  return new Promise((resolve) => {
+    const p = previewAlarm(o);
+    UI.ar = { o, title: p.title, rows: p.units.map((u, i) => Object.assign({ id: 'r' + i }, u)).concat(p.missing.map((k, i) => ({ id: 'm' + i, kind: k, vid: '', attach: null, force: null }))), ext: p.ext, frei: [], resolve };
+    openSheet('Alarmierung prüfen', arHtml(), { wide: true });
+  });
+}
+function arHtml() {
+  const A = UI.ar, pos = A.o.pos;
+  const used = new Set(A.rows.map((r) => r.vid).filter(Boolean));
+  const free = sim.vehicles.filter((v) => sim.isFree(v) && !['AB', 'RTB'].includes(v.kind));
+  const rows = A.rows.map((r) => {
+    const base = AR_BASE(r.kind);
+    const opts = free.filter((v) => base.includes(v.kind) && (!used.has(v.id) || v.id === r.vid)).sort((a, b) => distKm(a.pos, pos) - distKm(b.pos, pos));
+    const cur = r.vid ? sim.byId(r.vid) : null;
+    if (cur && !opts.includes(cur)) opts.unshift(cur);
+    const att = r.attach ? sim.byId(r.attach) : null;
+    return `<tr class="${r.vid ? '' : 'miss'}"><td><b>${esc(KIND_LABEL[r.kind] || r.kind)}</b>${att ? `<small> + ${esc(att.name)}</small>` : ''}${cur && cur.org === 'FF' ? '<small> · FF</small>' : ''}</td>
+      <td><select data-ar="veh" data-id="${r.id}" aria-label="Fahrzeug für ${esc(KIND_LABEL[r.kind] || r.kind)}"><option value="">– nicht alarmieren –</option>${opts.map((v) => `<option value="${v.id}" ${v.id === r.vid ? 'selected' : ''}>${esc(arVehLabel(v, pos))}</option>`).join('')}</select></td>
+      <td><button class="btn sm sec" data-act="ar-del" data-id="${r.id}" aria-label="Entfernen">✕</button></td></tr>`;
+  }).join('');
+  const addOpts = free.filter((v) => !used.has(v.id)).sort((a, b) => String(KIND_LABEL[a.kind] || a.kind).localeCompare(String(KIND_LABEL[b.kind] || b.kind)) || distKm(a.pos, pos) - distKm(b.pos, pos));
+  const groups = [...new Set(addOpts.map((v) => v.kind))];
+  return `<div class="hint"><b>${esc(A.title)}</b> – ${esc(A.o.addr.street)}. Vorschlag nach AAO und Bereichsfolge; Fahrzeuge austauschen, streichen oder ergänzen.</div>
+    <table class="utbl ar-tbl"><thead><tr><th>Einsatzmittel</th><th>Fahrzeug</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="3" class="hint">Keine Fahrzeuge im Vorschlag.</td></tr>'}</tbody></table>
+    ${A.ext.length ? `<div class="hint">Nur Info (nicht im Übungsbestand): ${esc(A.ext.join(', '))}</div>` : ''}
+    <div class="grp2"><h5>Fahrzeug ergänzen</h5><div class="el-row"><select id="arAdd" style="flex:1">${groups.map((k) => `<optgroup label="${esc(KIND_LABEL[k] || k)}">${addOpts.filter((v) => v.kind === k).map((v) => `<option value="${v.id}">${esc(arVehLabel(v, pos))}</option>`).join('')}</optgroup>`).join('')}</select><button class="btn sm" data-act="ar-add">Hinzufügen</button></div></div>
+    <div class="grp2"><h5>Freitext ergänzen</h5><div class="hint">Kräfte, die es im Tool nicht gibt (z. B. „RTW Witten 3“, „THW OV Bochum“).</div>
+      ${A.frei.map((c, i) => `<div class="el-row ar-frei"><b>${esc(c.name)}</b><span class="hint">${esc(CU_ORG[c.org] || c.org)} · ${c.eta ? 'in ' + c.eta + ' Min.' : 'sofort vor Ort'}</span><button class="btn sm sec" data-act="ar-fdel" data-i="${i}" aria-label="Entfernen">✕</button></div>`).join('')}
+      <div class="el-row"><input id="arFName" placeholder="Bezeichnung" list="nfList" autocomplete="off" style="flex:1"><datalist id="nfList">${CU_LIST().map((x) => `<option value="${esc(x)}">`).join('')}</datalist>
+        <select id="arFOrg">${Object.entries(CU_ORG).map(([k, l]) => `<option value="${k}" ${k === 'RD' ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <input id="arFEta" type="number" min="0" max="240" value="10" style="width:80px" aria-label="Eintreffen in Minuten" title="Eintreffen in Minuten (0 = sofort)"><button class="btn sm" data-act="ar-fadd">+</button></div></div>
+    <div class="el-row ep-send"><button class="btn sec" data-act="ar-cancel">Abbrechen</button><button class="btn red" data-act="ar-go">Alarmieren</button></div>`;
+}
+function arRefresh() { const sb = $('#sheetBody'); if (!sb || !UI.ar) return; const sc = sb.scrollTop; sb.innerHTML = arHtml(); sb.scrollTop = sc; }
+function arFinish(ok) {
+  const A = UI.ar; if (!A) return;
+  UI.ar = null;
+  closeSheet();
+  if (!ok) { A.resolve(null); return; }
+  const units = A.rows.filter((r) => r.vid).map((r) => ({ vid: r.vid, kind: r.kind, attach: r.attach, force: r.force }));
+  A.resolve({ units, missing: [], ext: A.ext, frei: A.frei.map((c) => (c.eta ? { name: c.name, org: c.org, stage: 1, auto: true, eta: c.eta } : { name: c.name, org: c.org, stage: 3 })) });
+}
+async function arClick(act, b) {
+  const A = UI.ar; if (!A) return false;
+  if (act === 'ar-del') { A.rows = A.rows.filter((r) => r.id !== b.dataset.id); arRefresh(); return true; }
+  if (act === 'ar-add') { const v = sim.byId($('#arAdd').value); if (v) { A.rows.push({ id: 'a' + Date.now(), kind: v.kind === 'LF' ? 'HLF' : v.kind, vid: v.id, attach: null, force: null }); arRefresh(); } return true; }
+  if (act === 'ar-fadd') { const name = ($('#arFName').value || '').trim(); if (!name) { toast('Bitte eine Bezeichnung eingeben'); return true; } A.frei.push({ name, org: $('#arFOrg').value, eta: Math.max(0, Math.min(240, Math.round(+$('#arFEta').value) || 0)) }); arRefresh(); setTimeout(() => { const f = $('#arFName'); if (f) f.focus(); }, 0); return true; }
+  if (act === 'ar-fdel') { A.frei.splice(+b.dataset.i, 1); arRefresh(); return true; }
+  if (act === 'ar-cancel') { arFinish(false); return true; }
+  if (act === 'ar-go') { arFinish(true); return true; }
+  return false;
+}
+document.addEventListener('change', (ev) => {
+  const t = ev.target; if (!UI.ar || !t.dataset || t.dataset.ar !== 'veh') return;
+  const r = UI.ar.rows.find((x) => x.id === t.dataset.id); if (!r) return;
+  if (r.vid !== t.value) { r.vid = t.value; if (!r.kind.startsWith('WLF:')) r.attach = null; r.force = null; }
+  arRefresh();
+});
+
+/* ---------- Fahrzeuge: Verfügbarkeit als Kuchendiagramme ---------- */
+const AV_KINDS = [['RTW', 'RTW'], ['NEF', 'NEF'], ['HLF', 'HLF'], ['DLK', 'DLK']];
+const AV_COL = { frei: '#2f9e44', einsatz: '#e03131', weg: '#adb5bd' };
+function avCount(kind) {
+  const list = sim.vehicles.filter((v) => v.kind === kind);
+  let frei = 0, einsatz = 0, weg = 0;
+  for (const v of list) { if (sim.isFree(v)) frei++; else if (v.incidentId || v.transportInc) einsatz++; else weg++; }
+  return { frei, einsatz, weg, n: list.length };
+}
+function avPie(c) {
+  const R0 = 52, C = 2 * Math.PI * R0;
+  let off = 0;
+  const seg = (val, col) => { if (!val || !c.n) return ''; const len = (val / c.n) * C; const s = `<circle r="${R0}" cx="70" cy="70" fill="none" stroke="${col}" stroke-width="26" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 70 70)"/>`; off += len; return s; };
+  return `<svg viewBox="0 0 140 140" width="140" height="140" role="img" aria-label="${c.frei} frei, ${c.einsatz} im Einsatz, ${c.weg} nicht verfügbar">
+    <circle r="${R0}" cx="70" cy="70" fill="none" stroke="var(--line, #e9ecef)" stroke-width="26"/>
+    ${seg(c.frei, AV_COL.frei)}${seg(c.einsatz, AV_COL.einsatz)}${seg(c.weg, AV_COL.weg)}
+    <text x="70" y="68" text-anchor="middle" font-size="26" font-weight="700" fill="currentColor">${c.frei}</text><text x="70" y="88" text-anchor="middle" font-size="12" fill="currentColor" opacity=".7">von ${c.n} frei</text></svg>`;
+}
+function avHTML() {
+  const cards = AV_KINDS.map(([k, l]) => {
+    const c = avCount(k);
+    return `<div class="av-card ${c.frei === 0 ? 'none' : c.frei <= 2 ? 'low' : ''}"><h4>${esc(l)}</h4>${avPie(c)}
+      <ul class="av-leg"><li><i style="background:${AV_COL.frei}"></i>frei <b>${c.frei}</b></li><li><i style="background:${AV_COL.einsatz}"></i>im Einsatz <b>${c.einsatz}</b></li>${c.weg ? `<li><i style="background:${AV_COL.weg}"></i>nicht verfügbar <b>${c.weg}</b></li>` : ''}</ul></div>`;
+  }).join('');
+  return `<div class="av-wrap"><div class="av-grid">${cards}</div><div class="hint">„Nicht verfügbar“ = außer Dienst oder nicht besetzt (z. B. Tagesdienst). Aktualisiert sich laufend.</div></div>`;
+}
+// freie Einheiten (Freitext) unter dem Fahrzeugtableau
+function cuFleetHTML() {
+  const all = [];
+  for (const inc of sim.incidents) for (const c of inc.custom || []) if (c.stage < 4) all.push({ inc, c });
+  if (!all.length) return '';
+  return `<div class="grp"><h4>Ergänzte Kräfte (Freitext) <span>${all.length} im Einsatz</span></h4>${all.map(({ inc, c }) => `<div class="fv" data-act="cu-edit" data-id="${c.id}" data-inc="${inc.id}">${stChip(CU_ST[c.stage])}<b>${esc(c.name)}</b><span class="x">${esc(CU_TXT[c.stage])} · ${esc(inc.title)} · ${esc(inc.addr.street)}</span></div>`).join('')}</div>`;
+}
 
 const EL = { list: [], cur: null, done: {}, mode: 'play', edit: null, open: new Set(), target: null, objTarget: store.get('el-objtarget', '__lage'), loaded: null, saveT: null, confirm: null, busy: null };
 const elId = (p) => p + Date.now().toString(36).slice(-6) + Math.random().toString(36).slice(2, 5);
@@ -7647,6 +7796,7 @@ document.addEventListener('click', async (e) => {
     case 'new-inc': openNew(); break;
     case 'open-ul': UI.confirmReset = false; openUL(); break;
     case 'claim': if (await tryClaim(true)) refreshUL(); break;
+    case 'ar-del': case 'ar-add': case 'ar-fadd': case 'ar-fdel': case 'ar-cancel': case 'ar-go': await arClick(act, b); break;
     case 'pause-toggle': await api.pause(!sim.paused); if (REMOTE) { sim.paused = !sim.paused; } render(true); toast(sim.paused ? 'Übung pausiert' : 'Übung läuft weiter'); break;
     case 'pack-load': await loadPack(+b.dataset.i || 0); break;
     case 'qr-make': await qrMake(); break;
