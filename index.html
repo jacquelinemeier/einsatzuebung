@@ -4664,7 +4664,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-23 10:27';
+const APP_VERSION = '2026-11-23 10:36';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -5613,7 +5613,13 @@ function renderDetails() {
     if (u.left) left += h; else act0 += h;
   }
   const miss = inc.missing.map((k, i) => `<tr class="miss" data-act="retry" data-kind="${k}" data-i="${i}"><td><div class="vname"><span class="flag REQ"></span><div><b>${esc(KIND_LABEL[k] || k)}</b><small>kein Fahrzeug frei – tippen, um erneut anzufordern</small></div></div></td><td><span class="fms">${stChip('x')}nicht besetzt</span></td><td class="hide-n"></td></tr>`).join('');
-  const nAct = inc.units.filter((u) => !u.left && !u.parent).length;
+  // freie Fahrzeuge / Einheiten (Freitext) mit im Einsatz anzeigen
+  for (const c of inc.custom || []) {
+    const fms = c.stage === 4 ? `${stChip('x')}frei gemeldet` : `${stChip(CU_ST[c.stage])}${esc(CU_TXT[c.stage])}`;
+    const h = `<tr class="${c.stage === 4 ? 'left' : ''}" data-act="cu-edit" data-id="${c.id}" data-inc="${inc.id}"><td><div class="vname"><span class="flag ${c.org}"></span><div><b>${esc(c.name)}</b><small>${esc(CU_ORG[c.org])}${c.info ? ' · ' + esc(c.info) : ''} · Freitext</small></div></div></td><td><span class="fms">${fms}</span></td><td class="hide-n"><span class="abs">${esc(secs['X:' + c.id] || '–')}</span></td></tr>`;
+    if (c.stage === 4) left += h; else act0 += h;
+  }
+  const nAct = inc.units.filter((u) => !u.left && !u.parent).length + (inc.custom || []).filter((c) => c.stage < 4).length;
   setHTML($('#dUnits'), `<div class="du-head"><h3>Einsatzmittel <span class="f-sub">${nAct} im Einsatz</span></h3></div>
     <table class="utbl"><thead><tr><th>Fahrzeug</th><th>Status</th><th class="hide-n">Abschnitt</th></tr></thead><tbody>
     ${req}${act0}${miss}${!req && !act0 && !miss && !left ? '<tr><td colspan="3" class="hint">Keine Einsatzmittel.</td></tr>' : ''}
@@ -5771,7 +5777,14 @@ function openNach() {
     return `<div class="hint">Die Anforderung geht an die Leitstelle und wird nach kurzer Zeit alarmiert (Zustand „angefordert“ → „alarmiert“). BF-Fahrzeuge nach Bereichsfolge ${inc.folge.join('-')}, alle anderen nach Entfernung.</div>
       <div class="kgrid">${NACH_KINDS.filter((k) => k !== 'LE').map((k) => { const n = freeCount(k); return `<button data-act="nach-kind" data-kind="${k}" ${n ? '' : 'disabled'}><b>${KIND_LABEL[k]}</b><span>${n} frei</span></button>`; }).join('')}</div>
       <div class="grp2"><h5>Löscheinheit</h5><div class="fld"><select id="nachLE">${les.map((v) => `<option value="${v.le}" ${sim.isFree(v) ? '' : 'disabled'}>${esc(v.name)}${sim.isFree(v) ? '' : ' – gebunden'}</option>`).join('')}</select></div><button class="btn" data-act="nach-le">Anfordern</button></div>
-      <div class="grp2"><h5>Bestimmtes Fahrzeug</h5><div class="fld"><select id="nachVeh">${list.map((v) => `<option value="${v.id}">${esc(v.name)} (${STATUS_TEXT[v.status]})</option>`).join('')}</select></div><button class="btn" data-act="nach-veh" ${list.length ? '' : 'disabled'}>Anfordern</button></div>`;
+      <div class="grp2"><h5>Bestimmtes Fahrzeug</h5><div class="fld"><select id="nachVeh">${list.map((v) => `<option value="${v.id}">${esc(v.name)} (${STATUS_TEXT[v.status]})</option>`).join('')}</select></div><button class="btn" data-act="nach-veh" ${list.length ? '' : 'disabled'}>Anfordern</button></div>
+      <div class="grp2"><h5>Freies Fahrzeug / Einheit (Freitext)</h5><div class="hint">Für Kräfte, die es im Tool nicht gibt, z. B. „RTW Hattingen 1“, „THW OV Bochum“. Erscheint im Einsatz und ist unter „Abschnitte“ zuordenbar.</div>
+        <div class="fld"><label for="nfName">Bezeichnung</label><input type="text" id="nfName" list="nfList" placeholder="z. B. RTW Witten 3, ELW Polizei" autocomplete="off"><datalist id="nfList">${CU_LIST().map((x) => `<option value="${esc(x)}">`).join('')}</datalist></div>
+        <div class="el-row"><div class="fld" style="flex:1"><label for="nfOrg">Organisation</label><select id="nfOrg">${Object.entries(CU_ORG).map(([k, l]) => `<option value="${k}" ${k === 'RD' ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+        <div class="fld" style="width:120px"><label for="nfAnz">Anzahl</label><input type="number" id="nfAnz" min="1" max="10" value="1"></div>
+        <div class="fld" style="width:140px"><label for="nfEta">Eintreffen in Min.</label><input type="number" id="nfEta" min="0" max="240" value="10"></div></div>
+        <div class="hint">0 Minuten = sofort vor Ort.</div>
+        <button class="btn" data-act="nach-frei">Alarmieren</button></div>`;
   };
   openSheet('Nachfordern', body());
 }
@@ -7721,6 +7734,18 @@ document.addEventListener('click', async (e) => {
       render(true); break;
     }
     case 'nach': openNach(); break;
+    case 'nach-frei': if (inc) {
+      const name = ($('#nfName').value || '').trim();
+      if (!name) { toast('Bitte eine Bezeichnung eingeben'); $('#nfName').focus(); break; }
+      const anz = Math.max(1, Math.min(10, Math.round(+$('#nfAnz').value) || 1)), eta = Math.max(0, Math.min(240, Math.round(+$('#nfEta').value) || 0));
+      let n = 0;
+      for (let k = 1; k <= anz; k++) {
+        const nm = anz > 1 ? `${name} ${k}` : name;
+        if (await api.customAdd(inc, eta === 0 ? { name: nm, org: $('#nfOrg').value, stage: 3 } : { name: nm, org: $('#nfOrg').value, stage: 1, auto: true, eta })) n++;
+      }
+      toast(n ? `${n === 1 ? name : n + '× ' + name} alarmiert` : 'Nicht möglich – Einsatz läuft nicht');
+      closeSheet(); render(true);
+    } break;
     case 'nach-kind': if (inc) { const ok = await api.request(inc, b.dataset.kind); toast(ok ? `${KIND_LABEL[b.dataset.kind]} angefordert` : 'Anforderung nicht möglich'); closeSheet(); render(true); } break;
     case 'nach-le': if (inc) { const n = +$('#nachLE').value; const ok = await api.request(inc, 'LE', null, n); toast(ok ? `LE ${n} angefordert` : 'Anforderung nicht möglich'); closeSheet(); render(true); } break;
     case 'filter': UI.filter = b.dataset.f; render(true); break;
