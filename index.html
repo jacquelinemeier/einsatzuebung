@@ -1226,6 +1226,10 @@ input, select, textarea { font: inherit; }
 .qr-img { width: 220px; height: 220px; background: #fff; padding: 6px; border-radius: 8px; border: 1px solid var(--line); }
 .qr-img svg { width: 100%; height: 100%; display: block; }
 .qr-box a.btn { text-decoration: none; }
+[data-role="anwender"] #pauseBtn { display: none !important; }
+.pausebtn.on { background: #ffd43b; color: #2b2300; border-color: #ffd43b; }
+.pauseband { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); z-index: 900; background: #ffd43b; color: #2b2300; font-weight: 700; padding: 6px 16px; border-radius: 99px; box-shadow: 0 2px 10px rgba(0,0,0,.2); pointer-events: none; font-size: 14px; }
+body.paused #clock { opacity: .55; }
 .el-b { overflow-y: auto; overflow-x: hidden; padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; gap: 10px; align-content: start; }
 .el-b > * { min-height: max-content; }
 .el .grp2 { grid-template-columns: minmax(0, 1fr); }
@@ -3793,11 +3797,13 @@ var qrcode = function() {
     <span class="sr" id="title"></span>
     <span class="pill" id="autoPill">MANUELL</span>
     <span class="clock tab" id="clock">--:--:--</span>
+    <button class="btn lead pausebtn" id="pauseBtn" data-act="pause-toggle">⏸ Pause</button>
     <button class="btn lead" data-act="el-open">Einlagen</button>
     <button class="btn lead" data-act="open-ul">Übungsleitung</button>
     <button class="btn lead out" data-act="logout" id="btnLogout">Abmelden</button>
   </div>
 </header>
+<div id="pauseBand" class="pauseband" hidden role="status">Übung pausiert – die Zeit steht still</div>
 
 <div class="app" id="app">
   <aside class="list">
@@ -4658,7 +4664,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-22 13:17';
+const APP_VERSION = '2026-11-23 10:27';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -4828,6 +4834,7 @@ const api = {
     applyAuto(patch);
   },
   async setStatus(v, st) { if (REMOTE) return post({ type: 'status', vid: v.id, st }); return sim.setStatus(v, st); },
+  async pause(on) { if (REMOTE) await post({ type: 'pause', on: !!on }); else sim.paused = !!on; },
   async clock() { if (REMOTE) await post({ type: 'clock' }); else { sim.now = Date.now(); sim.speed = 1; } },
   async reset() { if (REMOTE) await post({ type: 'reset' }); else { sim.reset(); sim.now = Date.now(); sim.planQ = []; } },
   async photo(inc, data, caption, meta) {
@@ -4869,7 +4876,7 @@ for (const k of Object.keys(api)) {
 function applySnap(s) {
   if (s.v !== APP_VERSION && !NET.verWarned) { NET.verWarned = true; alertVersion(s.v); }
   if (s.savedAt) { NET.lastSavedAt = Math.max(NET.lastSavedAt || 0, s.savedAt); NET.snapNow = s.now; NET.snapAt = s.savedAt; }
-  sim.now = s.now; sim.speed = s.speed; sim.auto = s.auto; sim.nextNr = s.nextNr; sim.routing = s.routing;
+  sim.now = s.now; sim.speed = s.speed; sim.paused = !!s.paused; sim.auto = s.auto; sim.nextNr = s.nextNr; sim.routing = s.routing;
   sim.vehicles = s.vehicles; sim.incidents = s.incidents; sim.planQ = Array.isArray(s.planQ) ? s.planQ : [];
   sim.reindex();
   if (s.lage && Array.isArray(s.lage.drawings)) sim.lage = s.lage;
@@ -4896,7 +4903,7 @@ function alertVersion(other) {
 /* ---------- Zentrale (nur Übungsleitung) ---------- */
 function buildSnap() {
   return {
-    now: sim.now, speed: sim.speed, auto: sim.auto, nextNr: sim.nextNr, routing: sim.routing, lage: sim.lage, incidents: sim.incidents, planQ: sim.planQ || [],
+    now: sim.now, speed: sim.speed, paused: !!sim.paused, auto: sim.auto, nextNr: sim.nextNr, routing: sim.routing, lage: sim.lage, incidents: sim.incidents, planQ: sim.planQ || [],
     // Straßenverläufe bleiben in der Zentrale, die Geräte bekommen nur die Positionen
     vehicles: sim.vehicles.map((v) => (v.job && v.job.path ? Object.assign({}, v, { job: Object.assign({}, v.job, { path: undefined, cum: undefined }) }) : v)),
     savedAt: Date.now(), v: APP_VERSION,
@@ -4945,7 +4952,7 @@ function catchUp(realMs) {
 }
 function becomeHost() {
   // Uhr auf echte Zeit nachführen: Stand der letzten Sicherung + seitdem vergangene Zeit
-  if (NET.snapNow && NET.snapAt) { sim.now = NET.snapNow; catchUp(Date.now() - NET.snapAt); }
+  if (NET.snapNow && NET.snapAt) { sim.now = NET.snapNow; if (!sim.paused) catchUp(Date.now() - NET.snapAt); }
   REMOTE = false; NET.host = true; NET.ok = true; NET.hostName = APPX.user.name;
   keepAwake();
   lastT = performance.now();
@@ -4997,7 +5004,7 @@ async function pollActions() {
   } catch (e) { console.error(e); } finally { NET.actBusy = false; }
 }
 // Die Zentrale nimmt Aufträge der anderen Geräte entgegen
-const LEAD_ONLY = new Set(['create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung', 'clock', 'erhoehen', 'end', 'status', 'rdlast']);
+const LEAD_ONLY = new Set(['pause', 'create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung', 'clock', 'erhoehen', 'end', 'status', 'rdlast']);
 function doAction(b) {
   const inc = b.incId ? sim.incById(b.incId) : null;
   const needInc = ['nachalarm', 'request', 'retry', 'custom-add', 'custom-set', 'drawings', 'erhoehen', 'end', 'sections', 'log', 'rueckmeldung', 'photo'];
@@ -5023,6 +5030,7 @@ function doAction(b) {
     case 'sections': if (b.sections && b.sections.el && Array.isArray(b.sections.eas) && Array.isArray(b.sections.left)) inc.sections = b.sections; return { ok: true };
     case 'log': inc.log.push({ t: sim.now, text: String(b.text || '').slice(0, 4000), kind: ['info', 'lage', 'warn', 'alarm', 'ff', 'foto', 'req'].includes(b.kind) ? b.kind : 'info' }); return { ok: true };
     case 'rueckmeldung': inc.log.push({ t: sim.now, text: 'Rückmeldung: ' + String(b.text || '').slice(0, 4000), kind: 'lage' }); return { ok: true };
+    case 'pause': sim.paused = !!b.on; return { ok: true };
     case 'speed': sim.speed = [1, 2, 5, 10].includes(+b.v) ? +b.v : 1; return { ok: true };
     case 'auto': applyAuto(b); return { ok: true };
     case 'clock': sim.now = Date.now(); sim.speed = 1; return { ok: true };
@@ -5425,6 +5433,10 @@ function renderTop() {
   if (offline) { p.textContent = 'KEINE VERBINDUNG'; p.classList.remove('live'); p.classList.add('off'); } else p.classList.remove('off');
   if (ersatz) { p.textContent = 'ERSATZVERBINDUNG'; p.title = 'Live-Verbindung gestört – Aktualisierung alle paar Sekunden über den Ersatzweg'; } else p.title = '';
   if (ROLE === 'anwender') p.hidden = !(offline || ersatz);
+  // Pause: für alle sichtbar, Leitung hat den Knopf
+  const pb = $('#pauseBtn'); if (pb) { pb.textContent = sim.paused ? '▶ Weiter' : '⏸ Pause'; pb.classList.toggle('on', !!sim.paused); pb.title = sim.paused ? 'Übung fortsetzen' : 'Übung anhalten: Uhr, Fahrzeuge und neue Einsätze stehen still'; }
+  const pz = $('#pauseBand'); if (pz) pz.hidden = !sim.paused;
+  document.body.classList.toggle('paused', !!sim.paused);
   $('#title').textContent = { details: 'Einsatz', lage: 'Lagekarte', fleet: 'Fahrzeuge' }[UI.view];
   for (const [id, v] of [['#tvDetails', 'details'], ['#tvLage', 'lage'], ['#tvFleet', 'fleet']]) $(id).classList.toggle('on', UI.view === v);
 }
@@ -7619,6 +7631,7 @@ document.addEventListener('click', async (e) => {
     case 'new-inc': openNew(); break;
     case 'open-ul': UI.confirmReset = false; openUL(); break;
     case 'claim': if (await tryClaim(true)) refreshUL(); break;
+    case 'pause-toggle': await api.pause(!sim.paused); if (REMOTE) { sim.paused = !sim.paused; } render(true); toast(sim.paused ? 'Übung pausiert' : 'Übung läuft weiter'); break;
     case 'pack-load': await loadPack(+b.dataset.i || 0); break;
     case 'qr-make': await qrMake(); break;
     case 'qr-print': qrPrint(); break;
@@ -7816,16 +7829,19 @@ async function tickOnce() {
   lastT = now;
   if (REMOTE) {
     // Gerät ohne Zentrale: nur die Uhr weiterlaufen lassen, der Stand kommt von der Zentrale
-    sim.now += dt * (sim.speed || 1);
+    if (!sim.paused) sim.now += dt * (sim.speed || 1);
     netWatch();
     render();
     return;
   }
   // Hing der Rechner (Ruhezustand, Hintergrund), wird die verpasste Zeit nachgeholt – die Uhr bleibt auf Echtzeit
-  if (elapsed > 6000) catchUp(elapsed); else sim.tick(dt);
-  processPlan();
-  if (sim.autoDue('fire', dt)) { UI.autoFlag = true; await newIncident({ key: sim.autoKey('fire') }); UI.autoFlag = false; }
-  if (sim.autoDue('rd', dt)) { await newIncident({ key: sim.autoKey('rd') }); }
+  // Pause: Uhr, Fahrzeuge, RD-Last und automatische Einsätze stehen still
+  if (!sim.paused) {
+    if (elapsed > 6000) catchUp(elapsed); else sim.tick(dt);
+    processPlan();
+    if (sim.autoDue('fire', dt)) { UI.autoFlag = true; await newIncident({ key: sim.autoKey('fire') }); UI.autoFlag = false; }
+    if (sim.autoDue('rd', dt)) { await newIncident({ key: sim.autoKey('rd') }); }
+  }
   if (NET.host) {
     if (Date.now() - NET.lastPub >= 2000) publishSnap();
     if (Date.now() - NET.lastBeat >= 4000) beat();
