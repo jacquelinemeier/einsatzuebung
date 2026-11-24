@@ -1243,6 +1243,8 @@ body.paused #clock { opacity: .55; }
 .ar-tbl select { width: 100%; } .ar-tbl tr.miss td:first-child b { color: #c92a2a; }
 .ar-frei { align-items: center; } .ar-frei .hint { flex: 1; margin: 0; }
 .fl-cats { grid-column: 1 / -1; justify-self: start; } .fl-cats small { opacity: .65; font-weight: 500; margin-left: 2px; }
+.fl-add { grid-column: 1 / -1; justify-self: start; }
+.ni-frei { margin: 4px 0 10px; } .ni-frei summary { cursor: pointer; font-weight: 600; font-size: 14px; padding: 4px 0; }
 .el-b { overflow-y: auto; overflow-x: hidden; padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; gap: 10px; align-content: start; }
 .el-b > * { min-height: max-content; }
 .el .grp2 { grid-template-columns: minmax(0, 1fr); }
@@ -4394,6 +4396,7 @@ function createSim() {
     for (const k in need) for (let i = 0; i < need[k] - (have[k] || 0); i++) diff.push(k);
     const old = inc.stw;
     inc.stw = newStw;
+    inc.stwText = null;
     inc.title = `${newStw}-${inc.schlagwort}`;
     log(inc, `Alarmstufe erhöht: ${old} → ${newStw}`, 'info');
     dispatch(inc, diff, 'Erhöhung ' + newStw);
@@ -4690,7 +4693,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-24 11:49';
+const APP_VERSION = '2026-11-24 12:11';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -4860,9 +4863,12 @@ const api = {
     applyAuto(patch);
   },
   async setStatus(v, st) { if (REMOTE) return post({ type: 'status', vid: v.id, st }); return sim.setStatus(v, st); },
+  async addVeh(d) { if (REMOTE) return (await post(Object.assign({ type: 'addveh' }, d))).ok; return !!vehAdd(d); },
+  async delVeh(id) { if (REMOTE) return (await post({ type: 'delveh', vid: id })).ok; return vehDel(id); },
+  async retitle(inc, b) { if (REMOTE) return (await post(Object.assign({ type: 'retitle', incId: inc.id }, b))).ok; return retitle(inc, b); },
   async pause(on) { if (REMOTE) await post({ type: 'pause', on: !!on }); else sim.paused = !!on; },
   async clock() { if (REMOTE) await post({ type: 'clock' }); else { sim.now = Date.now(); sim.speed = 1; } },
-  async reset() { if (REMOTE) await post({ type: 'reset' }); else { sim.reset(); sim.now = Date.now(); sim.planQ = []; sim.resetNr = (sim.resetNr || 0) + 1; } },
+  async reset() { if (REMOTE) await post({ type: 'reset' }); else { sim.reset(); vehReAdd(); sim.now = Date.now(); sim.planQ = []; sim.resetNr = (sim.resetNr || 0) + 1; } },
   async photo(inc, data, caption, meta) {
     const m = meta && meta.doc ? { doc: true, name: String(meta.name || 'Datei'), mime: String(meta.mime || '') } : null;
     let url = data;
@@ -4905,6 +4911,7 @@ function applySnap(s) {
   // Übung wurde (auf einem anderen Gerät) zurückgesetzt → Einlagen-Haken auch hier leeren
   if ((s.resetNr || 0) !== (sim.resetNr || 0) && sim.resetNr != null && typeof EL !== 'undefined') { EL.done = {}; if (typeof renderEL === 'function') renderEL(true); }
   sim.resetNr = s.resetNr || 0;
+  sim.addedVeh = Array.isArray(s.addedVeh) ? s.addedVeh : [];
   sim.now = s.now; sim.speed = s.speed; sim.paused = !!s.paused; sim.auto = s.auto; sim.nextNr = s.nextNr; sim.routing = s.routing;
   sim.vehicles = s.vehicles; sim.incidents = s.incidents; sim.planQ = Array.isArray(s.planQ) ? s.planQ : [];
   sim.reindex();
@@ -4932,7 +4939,7 @@ function alertVersion(other) {
 /* ---------- Zentrale (nur Übungsleitung) ---------- */
 function buildSnap() {
   return {
-    now: sim.now, speed: sim.speed, paused: !!sim.paused, resetNr: sim.resetNr || 0, auto: sim.auto, nextNr: sim.nextNr, routing: sim.routing, lage: sim.lage, incidents: sim.incidents, planQ: sim.planQ || [],
+    now: sim.now, speed: sim.speed, paused: !!sim.paused, addedVeh: sim.addedVeh || [], resetNr: sim.resetNr || 0, auto: sim.auto, nextNr: sim.nextNr, routing: sim.routing, lage: sim.lage, incidents: sim.incidents, planQ: sim.planQ || [],
     // Straßenverläufe bleiben in der Zentrale, die Geräte bekommen nur die Positionen
     vehicles: sim.vehicles.map((v) => (v.job && v.job.path ? Object.assign({}, v, { job: Object.assign({}, v.job, { path: undefined, cum: undefined }) }) : v)),
     savedAt: Date.now(), v: APP_VERSION,
@@ -5033,7 +5040,44 @@ async function pollActions() {
   } catch (e) { console.error(e); } finally { NET.actBusy = false; }
 }
 // Die Zentrale nimmt Aufträge der anderen Geräte entgegen
-const LEAD_ONLY = new Set(['pause', 'create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung', 'clock', 'erhoehen', 'end', 'status', 'rdlast']);
+
+// ---------- eigene Fahrzeuge und Freitext-Stichworte ----------
+const ADDVEH_KINDS = ['HLF', 'LF', 'DLK', 'TLF', 'RW', 'GWAS', 'HOE', 'KEF', 'GWL2', 'GWSCHIENE', 'FWK', 'GWW', 'ABCERK', 'GWSAN', 'GWHYG', 'WLF', 'C', 'B', 'A', 'LDF', 'RTW', 'NEF', 'KTW', 'SONST'];
+function vehAddObj(d) {
+  if (!d || !SITES[d.site] || !d.name) return null;
+  if (sim.vehicles.some((v) => v.id === d.id)) return null;
+  const v = { id: d.id, name: String(d.name).slice(0, 40), type: KIND_LABEL[d.kind] || d.kind, kind: d.kind, org: d.org, site: d.site, wache: +String(d.site).replace(/\D/g, '') || undefined,
+    status: 2, incidentId: null, job: null, extra: true, pos: SITES[d.site].pos.slice() };
+  sim.vehicles.push(v); sim.reindex();
+  return v;
+}
+function vehAdd(b) {
+  const kind = ADDVEH_KINDS.includes(b.kind) ? b.kind : 'SONST';
+  const org = ['BF', 'RD', 'FU'].includes(b.org) ? b.org : 'BF';
+  const d = { id: 'X-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name: String(b.name || '').trim(), kind, org, site: String(b.site || '') };
+  const v = vehAddObj(d);
+  if (!v) return null;
+  sim.addedVeh = (sim.addedVeh || []).concat([d]);
+  return v;
+}
+function vehDel(id) {
+  const v = sim.byId(id);
+  if (!v || !v.extra || v.incidentId) return false;
+  sim.vehicles = sim.vehicles.filter((x) => x.id !== id); sim.reindex();
+  sim.addedVeh = (sim.addedVeh || []).filter((d) => d.id !== id);
+  return true;
+}
+function vehReAdd() { for (const d of sim.addedVeh || []) vehAddObj(d); }
+function retitle(inc, b) {
+  if (!inc) return false;
+  const sw = String(b.sw || '').trim().slice(0, 80), an = String(b.anlass || '').trim().slice(0, 200), st = String(b.stwText || '').trim().slice(0, 30);
+  if (sw) inc.schlagwort = sw;
+  if (an) inc.anlass = an;
+  inc.stwText = st && st !== inc.stw ? st : null;
+  inc.title = `${inc.stwText || inc.stw}-${inc.schlagwort}`;
+  return true;
+}
+const LEAD_ONLY = new Set(['addveh', 'delveh', 'retitle', 'pause', 'create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung', 'clock', 'erhoehen', 'end', 'status', 'rdlast']);
 function doAction(b) {
   const inc = b.incId ? sim.incById(b.incId) : null;
   const needInc = ['nachalarm', 'request', 'retry', 'custom-add', 'custom-set', 'drawings', 'erhoehen', 'end', 'sections', 'log', 'rueckmeldung', 'photo'];
@@ -5065,11 +5109,14 @@ function doAction(b) {
     case 'log': inc.log.push({ t: sim.now, text: String(b.text || '').slice(0, 4000), kind: ['info', 'lage', 'warn', 'alarm', 'ff', 'foto', 'req'].includes(b.kind) ? b.kind : 'info' }); return { ok: true };
     case 'rueckmeldung': inc.log.push({ t: sim.now, text: 'Rückmeldung: ' + String(b.text || '').slice(0, 4000), kind: 'lage' }); return { ok: true };
     case 'pause': sim.paused = !!b.on; return { ok: true };
+    case 'addveh': return { ok: !!vehAdd(b) };
+    case 'delveh': return { ok: vehDel(b.vid) };
+    case 'retitle': return { ok: retitle(inc, b) };
     case 'speed': sim.speed = [1, 2, 5, 10].includes(+b.v) ? +b.v : 1; return { ok: true };
     case 'auto': applyAuto(b); return { ok: true };
     case 'clock': sim.now = Date.now(); sim.speed = 1; return { ok: true };
     case 'status': { const v = sim.byId(b.vid); if (!v) return { ok: false, error: 'Fahrzeug nicht gefunden' }; return sim.setStatus(v, b.st); }
-    case 'reset': sim.reset(); sim.now = Date.now(); sim.lage.drawings = []; sim.planQ = []; sim.resetNr = (sim.resetNr || 0) + 1; return { ok: true };
+    case 'reset': sim.reset(); vehReAdd(); sim.now = Date.now(); sim.lage.drawings = []; sim.planQ = []; sim.resetNr = (sim.resetNr || 0) + 1; return { ok: true };
     case 'photo': {
       if (!/^https:\/\//.test(String(b.data || ''))) return { ok: false, error: 'Datei fehlt' };
       const m = b.doc ? { doc: true, name: String(b.name || 'Datei').slice(0, 200), mime: String(b.mime || '').slice(0, 100) } : {};
@@ -5640,7 +5687,7 @@ function renderDetails() {
     act = UI.confirmEnd === inc.id
       ? `<div class="confirm"><b>Einsatz beenden?</b><span>Alle Fahrzeuge melden sich frei und fahren zur Wache.</span><div class="row"><button class="btn sec" data-act="end-no">Abbrechen</button><button class="btn red" data-act="end-yes">Beenden</button></div></div>`
       : CAN_LEAD
-        ? `<button class="btn" data-act="nach">Nachfordern</button><button class="btn sec" data-act="erh">Stufe erhöhen</button><button class="btn sec" data-act="ab-open">Abschnitte</button><button class="btn sec" data-act="end">Beenden</button>`
+        ? `<button class="btn" data-act="nach">Nachfordern</button><button class="btn sec" data-act="erh">Stufe erhöhen</button><button class="btn sec" data-act="rt-open">Stichwort ändern</button><button class="btn sec" data-act="ab-open">Abschnitte</button><button class="btn sec" data-act="end">Beenden</button>`
         : `<button class="btn" data-act="nach">Nachfordern</button><button class="btn sec" data-act="ab-open">Abschnitte</button>`;
     if (CAN_LEAD) act += inc.endAt ? `<div class="hint" style="grid-column:1/-1">Geplantes Einsatzende ca. ${fmtT(inc.endAt)} Uhr</div>` : '<div class="hint" style="grid-column:1/-1">Offener Einsatz – wird nur manuell beendet</div>';
   }
@@ -5715,7 +5762,7 @@ function renderFleet() {
   const catBtn = (c, l) => { const [f, n] = cnt(c); return `<button data-act="fl-cat" data-c="${c}" class="${FC === c ? 'on' : ''}">${l} <small>${f}/${n}</small></button>`; };
   const cats = `<div class="fl-cats seg">${catBtn('alle', 'Alle')}${catBtn('FW', 'Feuerwehr')}${catBtn('RD', 'Rettungsdienst')}${catBtn('FF', 'Freiwillige Feuerwehr')}</div>`;
   groups.length = 0; groups.push(...shown);
-  let h = tabs + cats + `<div class="legend">${[2, 1, 'A', 3, 4, 7, 8, 6].map((s) => `<span>${stChip(s)}${STATUS_TEXT[s]}</span>`).join('')}</div>`;
+  let h = tabs + cats + (CAN_LEAD ? '<div class="fl-add"><button class="btn sm" data-act="av-open">+ Fahrzeug anlegen</button></div>' : '') + `<div class="legend">${[2, 1, 'A', 3, 4, 7, 8, 6].map((s) => `<span>${stChip(s)}${STATUS_TEXT[s]}</span>`).join('')}</div>`;
   for (const g of groups) {
     h += `<div class="grp"><h4>${esc(g.t)} <span>${g.list.filter(free).length}/${g.list.length} frei</span></h4>` + g.list.map((v) => {
       const inc = sim.incById(v.incidentId || v.transportInc);
@@ -5821,6 +5868,7 @@ function openVehicle(vid) {
     const running = sim.incidents.filter((i) => i.status === 'laufend');
     return `<div class="grp2"><div style="display:flex;gap:10px;align-items:center">${stChip(v.status)}<b style="font-size:20px">${esc(v.name)}</b></div>
       <div class="hint">${esc(STATUS_TEXT[v.status])}<br>Standort: ${esc(v.org === 'FF' ? (v.leAddr || sim.byId(v.parent).leAddr) : SITES[v.site].label + ', ' + SITES[v.site].addr)}${v.block ? `<br>Fahrzeuge: ${esc(v.members.join(', '))}` : ''}${v.strength ? `<br>Stärke ${v.strength.text}, ${v.strength.agt} AGT` : ''}${v.hours ? `<br>Dienstzeit ${v.hours[0]}–${v.hours[1]} Uhr` : ''}</div>
+      ${v.extra && CAN_LEAD && !v.incidentId ? `<button class="btn sm sec" data-act="veh-del" data-vid="${v.id}">Selbst angelegtes Fahrzeug löschen</button>` : ''}
       ${inc ? `<div class="hint">Im Einsatz: <b>${esc(inc.title)}</b>, ${esc(inc.addr.street)}</div><button class="btn" data-act="release" data-vid="${v.id}">Freimelden – Status 1</button>` : ''}</div>
       ${sim.isFree(v) && running.length ? `<div class="grp2"><h5>Einem Einsatz zuweisen</h5><div class="fld"><select id="vaInc">${running.map((i) => `<option value="${i.id}" ${i.id === UI.sel ? 'selected' : ''}>${esc(i.title)} – ${esc(i.addr.street)}</option>`).join('')}</select></div><button class="btn" data-act="assign" data-vid="${v.id}">Anfordern</button></div>` : ''}
       ${CAN_LEAD && !v.carriedBy ? `<div class="grp2"><h5>Status setzen <small>nur Übungsleitung</small></h5><div class="hint">Falls etwas nicht schnell genug geht. Die Übung rechnet ab dem neuen Status normal weiter.</div><div class="stset">${[1, 2, 3, 4, 7, 8, 6].map((s) => `<button class="btn sec sm${String(v.status) === String(s) ? ' on' : ''}" data-act="vst" data-vid="${v.id}" data-st="${s}" title="${esc(STATUS_TEXT[s])}">${stChip(s)}${s}</button>`).join('')}</div></div>` : ''}`;
@@ -5870,6 +5918,11 @@ function openNew() {
   UI.niPos = null; UI.niRev = null;
   const body = `<div class="fld"><label for="niKey">Stichwort</label><select id="niKey">${Object.keys(CATALOG).map((k) => `<option value="${k}">${KEY_LABEL[k]}</option>`).join('')}</select></div>
     <div class="fld"><label for="niItem">Schlagwort / Einsatzanlass</label><select id="niItem"></select></div>
+    <details class="ni-frei"><summary>Freitext: eigenes Stichwort / Meldebild</summary>
+      <div class="el-row"><div class="fld" style="width:150px"><label for="niStwT">Stichwort</label><input id="niStwT" placeholder="z. B. B2 BMA" autocomplete="off"></div>
+      <div class="fld" style="flex:1"><label for="niSw">Schlagwort</label><input id="niSw" placeholder="z. B. Brand Serverraum" autocomplete="off"></div></div>
+      <div class="fld"><label for="niAnl">Meldebild</label><input id="niAnl" placeholder="z. B. Rauch aus Kellerfenster, Personen im Gebäude" autocomplete="off"></div>
+      <div class="hint">Die Alarmierung richtet sich weiter nach dem gewählten Stichwort oben (AAO).</div></details>
     <div class="fld"><label>Adresse</label><div class="seg" id="niMode"><button data-act="ni-mode" data-m="rand" class="on">Zufällig</button><button data-act="ni-mode" data-m="list">Aus Liste</button><button data-act="ni-mode" data-m="free">Eingabe / Karte</button></div></div>
     <div class="fld" id="niListF" hidden><select id="niList">${ALL_ADDR.concat(BAB_ADDR).map((a, i) => `<option value="${i}">${esc(a.district)} – ${esc(a.street)}${a.object ? ' (' + esc(a.object) + ')' : ''}</option>`).join('')}</select></div>
     <div class="fld" id="niFreeF" hidden><input type="text" id="niFree" placeholder="z. B. Kortumstraße 20, 44787" autocomplete="off"><div class="minimap" id="niMap"></div><div class="hint">Adresse eintippen oder auf die Karte tippen, um den Einsatzort zu setzen.</div></div>
@@ -5906,7 +5959,9 @@ async function submitNew() {
   const key = $('#niKey').value;
   const iv = $('#niItem').value;
   const ovr = UI.niOverride; UI.niOverride = null;
-  const item = ovr ? ovr.item : iv === '' ? null : CATALOG[key].items[+iv];
+  let item = ovr ? ovr.item : iv === '' ? null : CATALOG[key].items[+iv];
+  const fSw = ($('#niSw') && $('#niSw').value || '').trim(), fAnl = ($('#niAnl') && $('#niAnl').value || '').trim(), fStw = ($('#niStwT') && $('#niStwT').value || '').trim();
+  if (fSw || fAnl) { item = Object.assign({}, item || R.pick(CATALOG[key].items)); if (fSw) item.sw = fSw; if (fAnl) item.anlass = fAnl; }
   const dsel = $('#niDur').value;
   const duration = dsel === 'open' ? 'open' : dsel === 'min' ? Math.max(1, +$('#niMin').value || 30) : 'auto';
   const o = { key, item, duration, select: true, review: true };
@@ -5937,6 +5992,7 @@ async function submitNew() {
   if (UI.view !== 'details') setView('details');
   const inc = await newIncident(o);
   if (!inc) return;
+  if (fStw) { await api.retitle(inc, { stwText: fStw, sw: inc.schlagwort, anlass: inc.anlass }); render(true); }
   toast(`${inc.title} alarmiert – ${inc.addr.street}`);
   if (ovr && ovr.after) ovr.after(inc);
 }
@@ -7333,6 +7389,50 @@ function cuFleetHTML() {
   return `<div class="grp"><h4>Ergänzte Kräfte (Freitext) <span>${all.length} im Einsatz</span></h4>${all.map(({ inc, c }) => `<div class="fv" data-act="cu-edit" data-id="${c.id}" data-inc="${inc.id}">${stChip(CU_ST[c.stage])}<b>${esc(c.name)}</b><span class="x">${esc(CU_TXT[c.stage])} · ${esc(inc.title)} · ${esc(inc.addr.street)}</span></div>`).join('')}</div>`;
 }
 
+/* ---------- eigene Fahrzeuge anlegen ---------- */
+const AV_SITE_LABEL = Object.fromEntries(['FW1', 'FW2', 'FW3', 'FW4', 'RW5', 'RW6', 'RW7', 'RW8'].map((k) => [k, (k.startsWith('FW') ? 'Feuer- und Rettungswache ' : 'Rettungswache ') + k.slice(2)]));
+const vkLabel = (k) => (k === 'SONST' ? 'Sonstiges (nur manuell)' : k === 'WLF' ? 'WLF (ohne AB)' : KIND_LABEL[k] || k);
+const orgFor = (k) => (['RTW', 'NEF', 'KTW'].includes(k) ? 'RD' : ['A', 'B', 'C', 'LDF'].includes(k) ? 'FU' : 'BF');
+function openAddVeh() {
+  const body = `<div class="hint">Erscheint im Fahrzeugtableau unter der gewählten Wache, ist frei (Status 2) und wird wie alle anderen Fahrzeuge alarmiert – auch über die AAO, wenn die Art passt.</div>
+    <div class="fld"><label for="avName">Funkrufname / Bezeichnung</label><input id="avName" placeholder="z. B. 02-HLF20-03, 05-RTW-03" autocomplete="off"></div>
+    <div class="el-row"><div class="fld" style="flex:1"><label for="avKind">Fahrzeugart</label><select id="avKind">${ADDVEH_KINDS.map((k) => `<option value="${k}">${esc(vkLabel(k))}</option>`).join('')}</select></div>
+    <div class="fld" style="flex:1"><label for="avSite">Wache</label><select id="avSite">${Object.keys(AV_SITE_LABEL).filter((k) => SITES[k]).map((k) => `<option value="${k}">${esc(AV_SITE_LABEL[k])}</option>`).join('')}</select></div></div>
+    <div class="hint">Rettungsdienst-Fahrzeuge stehen unter „Rettungswache“, Führungsdienste und Feuerwehr-Fahrzeuge unter „Feuer- und Rettungswache“.</div>
+    <div class="el-row ep-send"><button class="btn sec" data-act="close-sheet">Abbrechen</button><button class="btn" data-act="av-add">Anlegen</button></div>`;
+  openSheet('Fahrzeug anlegen', body);
+  setTimeout(() => { const f = $('#avName'); if (f) f.focus(); }, 50);
+}
+async function addVehGo() {
+  const name = ($('#avName').value || '').trim(), kind = $('#avKind').value, site = $('#avSite').value;
+  if (!name) { toast('Bitte eine Bezeichnung eingeben'); $('#avName').focus(); return; }
+  if (sim.vehicles.some((v) => v.name.toLowerCase() === name.toLowerCase())) { toast('Diese Bezeichnung gibt es schon'); return; }
+  const ok = await api.addVeh({ name, kind, site, org: orgFor(kind) });
+  closeSheet();
+  toast(ok ? `${name} angelegt – ${AV_SITE_LABEL[site]}` : 'Anlegen nicht möglich');
+  render(true);
+}
+
+/* ---------- Stichwort / Meldebild ändern ---------- */
+function openRetitle() {
+  const inc = sim.incById(UI.sel); if (!inc) return;
+  const body = `<div class="hint">Ändert nur die Anzeige (Titel, Schlagwort, Meldebild) – die Alarmstufe für die AAO bleibt ${esc(inc.stw)}. Zum Erhöhen „Stufe erhöhen“ nutzen.</div>
+    <div class="el-row"><div class="fld" style="width:160px"><label for="rtStw">Stichwort</label><input id="rtStw" value="${esc(inc.stwText || inc.stw)}" autocomplete="off"></div>
+    <div class="fld" style="flex:1"><label for="rtSw">Schlagwort</label><input id="rtSw" value="${esc(inc.schlagwort)}" autocomplete="off"></div></div>
+    <div class="fld"><label for="rtAnl">Meldebild / Einsatzanlass</label><textarea id="rtAnl" rows="3">${esc(inc.anlass)}</textarea></div>
+    <div class="el-row ep-send"><button class="btn sec" data-act="close-sheet">Abbrechen</button><button class="btn" data-act="rt-go">Übernehmen</button></div>`;
+  openSheet('Stichwort / Meldebild ändern', body);
+}
+async function retitleGo() {
+  const inc = sim.incById(UI.sel); if (!inc) return;
+  const b = { stwText: $('#rtStw').value, sw: $('#rtSw').value, anlass: $('#rtAnl').value };
+  const old = inc.title;
+  const ok = await api.retitle(inc, b);
+  if (ok) await api.log(inc, `Stichwort/Meldebild geändert: ${(b.stwText || inc.stw).trim()}-${b.sw.trim() || inc.schlagwort}${b.anlass.trim() ? ' – ' + b.anlass.trim() : ''} (vorher ${old})`, 'info');
+  closeSheet(); render(true);
+  toast(ok ? 'Stichwort geändert' : 'Ändern nicht möglich');
+}
+
 const EL = { list: [], cur: null, done: {}, mode: 'play', edit: null, open: new Set(), target: null, objTarget: store.get('el-objtarget', '__lage'), loaded: null, saveT: null, confirm: null, busy: null };
 const elId = (p) => p + Date.now().toString(36).slice(-6) + Math.random().toString(36).slice(2, 5);
 const elScen = () => EL.list.find((s) => s.id === EL.cur) || EL.list[0] || null;
@@ -7827,6 +7927,11 @@ document.addEventListener('click', async (e) => {
     case 'open-ul': UI.confirmReset = false; openUL(); break;
     case 'claim': if (await tryClaim(true)) refreshUL(); break;
     case 'ar-del': case 'ar-add': case 'ar-fadd': case 'ar-fdel': case 'ar-cancel': case 'ar-go': await arClick(act, b); break;
+    case 'av-open': if (CAN_LEAD) openAddVeh(); break;
+    case 'av-add': if (CAN_LEAD) await addVehGo(); break;
+    case 'veh-del': if (CAN_LEAD) { const ok = await api.delVeh(b.dataset.vid); closeSheet(); toast(ok ? 'Fahrzeug gelöscht' : 'Löschen nicht möglich (im Einsatz?)'); render(true); } break;
+    case 'rt-open': if (CAN_LEAD) openRetitle(); break;
+    case 'rt-go': if (CAN_LEAD) await retitleGo(); break;
     case 'pause-toggle': await api.pause(!sim.paused); if (REMOTE) { sim.paused = !sim.paused; } render(true); toast(sim.paused ? 'Übung pausiert' : 'Übung läuft weiter'); break;
     case 'pack-load': await loadPack(+b.dataset.i || 0); break;
     case 'qr-make': await qrMake(); break;
