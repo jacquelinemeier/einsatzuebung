@@ -4084,7 +4084,9 @@ function createSim() {
     const d = new Date(S.now), day = d.getDay(), h = d.getHours();
     return day === 0 || day === 6 || h >= 18 || h < 6;
   }
-  const lesByDist = (pos) => LES.slice().sort((a, b) => distKm(pos, a.pos) - distKm(pos, b.pos));
+  // aktueller Standort der LE (verlegt → Wache)
+  const lePos = (l) => { const v = byId('LE' + l.nr); return v && v.homePos ? v.homePos : l.pos; };
+  const lesByDist = (pos) => LES.slice().sort((a, b) => distKm(pos, lePos(a)) - distKm(pos, lePos(b)));
   const zustaendigeLE = (pos) => lesByDist(pos)[0];
 
   // ---------- Fahrzeugauswahl ----------
@@ -4696,7 +4698,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-24 12:16';
+const APP_VERSION = '2026-11-24 12:20';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -4867,6 +4869,7 @@ const api = {
   },
   async setStatus(v, st) { if (REMOTE) return post({ type: 'status', vid: v.id, st }); return sim.setStatus(v, st); },
   async logDel(inc, t, text) { if (REMOTE) return (await post({ type: 'logdel', incId: inc.id, t, text })).ok; return logDel(inc, { t, text }); },
+  async verlegen(vid, site) { if (REMOTE) return (await post({ type: 'verlegen', vid, site })).ok; return verlegen({ vid, site }); },
   async addVeh(d) { if (REMOTE) return (await post(Object.assign({ type: 'addveh' }, d))).ok; return !!vehAdd(d); },
   async delVeh(id) { if (REMOTE) return (await post({ type: 'delveh', vid: id })).ok; return vehDel(id); },
   async retitle(inc, b) { if (REMOTE) return (await post(Object.assign({ type: 'retitle', incId: inc.id }, b))).ok; return retitle(inc, b); },
@@ -5088,7 +5091,21 @@ function logDel(inc, b) {
   inc.log.splice(i, 1);
   return true;
 }
-const LEAD_ONLY = new Set(['logdel', 'addveh', 'delveh', 'retitle', 'pause', 'create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung', 'clock', 'erhoehen', 'end', 'status', 'rdlast']);
+function verlegen(b) {
+  const v = sim.byId(b.vid);
+  if (!v || !v.block || v.incidentId) return false;
+  const site = b.site && SITES[b.site] ? b.site : '';
+  if (!v.homeOrig) v.homeOrig = v.homePos.slice();
+  const home = site ? SITES[site].pos.slice() : v.homeOrig.slice();
+  const all = [v, ...(v.members || []).map((m) => sim.byId(m)).filter(Boolean)];
+  for (const x of all) {
+    x.homePos = home.slice();
+    if (site) x.verlegt = site; else delete x.verlegt;
+    if (!x.job && (x.status === 2 || x.status === 1 || x.status === 6)) x.pos = home.slice();
+  }
+  return true;
+}
+const LEAD_ONLY = new Set(['verlegen', 'logdel', 'addveh', 'delveh', 'retitle', 'pause', 'create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung', 'clock', 'erhoehen', 'end', 'status', 'rdlast']);
 function doAction(b) {
   const inc = b.incId ? sim.incById(b.incId) : null;
   const needInc = ['nachalarm', 'request', 'retry', 'custom-add', 'custom-set', 'drawings', 'erhoehen', 'end', 'sections', 'log', 'rueckmeldung', 'photo'];
@@ -5121,6 +5138,7 @@ function doAction(b) {
     case 'rueckmeldung': inc.log.push({ t: sim.now, text: 'Rückmeldung: ' + String(b.text || '').slice(0, 4000), kind: 'lage' }); return { ok: true };
     case 'pause': sim.paused = !!b.on; return { ok: true };
     case 'addveh': return { ok: !!vehAdd(b) };
+    case 'verlegen': return { ok: verlegen(b) };
     case 'logdel': return { ok: logDel(inc, b) };
     case 'delveh': return { ok: vehDel(b.vid) };
     case 'retitle': return { ok: retitle(inc, b) };
@@ -5755,7 +5773,7 @@ function renderFleet() {
   const V = sim.vehicles;
   const sonder = ['WLF', 'AB', 'FWK', 'KEF', 'GWSCHIENE', 'GWL2', 'GWHYG', 'GWSAN', 'ABCERK'];
   const groups = [];
-  for (const w of [1, 2, 3, 4]) groups.push({ t: `Feuer- und Rettungswache ${w}`, list: V.filter((v) => v.site === 'FW' + w && (v.org === 'BF' || v.org === 'FU') && !sonder.includes(v.kind)) });
+  for (const w of [1, 2, 3, 4]) groups.push({ t: `Feuer- und Rettungswache ${w}`, list: V.filter((v) => (v.site === 'FW' + w && (v.org === 'BF' || v.org === 'FU') && !sonder.includes(v.kind)) || (v.block && v.verlegt === 'FW' + w)) });
   groups.push({ t: 'FRW 3 – Logistik und Sonderfahrzeuge', list: V.filter((v) => v.site === 'FW3' && sonder.includes(v.kind) && v.kind !== 'AB') });
   groups.push({ t: 'Abrollbehälter (FRW 3)', list: V.filter((v) => v.kind === 'AB') });
   for (const k of ['FW1', 'FW2', 'FW3', 'FW4', 'RW5', 'RW6', 'RW7', 'RW8']) groups.push({ t: `Rettungswache ${k.replace(/\D/g, '')}`, list: V.filter((v) => v.site === k && v.org === 'RD') });
@@ -5781,6 +5799,7 @@ function renderFleet() {
       let x = inc ? inc.title + ' · ' + inc.addr.street : STATUS_TEXT[v.status];
       if (v.carriedBy) x = 'auf ' + v.carriedBy + (inc ? ' · ' + inc.title : '');
       if (g.ff) x = (inc ? inc.title + ' · ' : '') + (v.strength ? `Stärke ${v.strength.text}, ${v.strength.agt} AGT` : v.members.join(', '));
+      if (v.verlegt) x = (g.ff ? `verlegt nach ${SITES[v.verlegt] ? SITES[v.verlegt].label : v.verlegt} · ` : 'FF – verlegt · ') + x;
       return `<div class="fv" data-act="veh" data-vid="${v.id}">${stChip(v.status)}<b>${esc(v.name)}</b><span class="x">${esc(x)}</span></div>`;
     }).join('') + '</div>';
   }
@@ -5879,7 +5898,8 @@ function openVehicle(vid) {
     const inc = sim.incById(v.incidentId);
     const running = sim.incidents.filter((i) => i.status === 'laufend');
     return `<div class="grp2"><div style="display:flex;gap:10px;align-items:center">${stChip(v.status)}<b style="font-size:20px">${esc(v.name)}</b></div>
-      <div class="hint">${esc(STATUS_TEXT[v.status])}<br>Standort: ${esc(v.org === 'FF' ? (v.leAddr || sim.byId(v.parent).leAddr) : SITES[v.site].label + ', ' + SITES[v.site].addr)}${v.block ? `<br>Fahrzeuge: ${esc(v.members.join(', '))}` : ''}${v.strength ? `<br>Stärke ${v.strength.text}, ${v.strength.agt} AGT` : ''}${v.hours ? `<br>Dienstzeit ${v.hours[0]}–${v.hours[1]} Uhr` : ''}</div>
+      <div class="hint">${esc(STATUS_TEXT[v.status])}<br>Standort: ${esc(v.verlegt && SITES[v.verlegt] ? 'verlegt nach ' + SITES[v.verlegt].label + ', ' + SITES[v.verlegt].addr : v.org === 'FF' ? (v.leAddr || sim.byId(v.parent).leAddr) : SITES[v.site].label + ', ' + SITES[v.site].addr)}${v.block ? `<br>Fahrzeuge: ${esc(v.members.join(', '))}` : ''}${v.strength ? `<br>Stärke ${v.strength.text}, ${v.strength.agt} AGT` : ''}${v.hours ? `<br>Dienstzeit ${v.hours[0]}–${v.hours[1]} Uhr` : ''}</div>
+      ${v.block && CAN_LEAD && !v.incidentId ? `<div class="grp2"><h5>Verlegen</h5><div class="hint">${v.verlegt ? 'Zurzeit verlegt nach ' + esc(SITES[v.verlegt] ? SITES[v.verlegt].label : v.verlegt) + '. ' : ''}Die Einheit steht dann an der gewählten Wache, erscheint dort im Fahrzeugtableau und rückt von dort aus.</div><div class="el-row"><select id="vlSite" style="flex:1"><option value="">Heimatstandort (${esc(v.leAddr || '')})</option>${['FW1', 'FW2', 'FW3', 'FW4'].filter((k) => SITES[k]).map((k) => `<option value="${k}" ${v.verlegt === k ? 'selected' : ''}>${esc(SITES[k].label)}</option>`).join('')}</select><button class="btn sm" data-act="veh-verl" data-vid="${v.id}">Verlegen</button></div></div>` : ''}
       ${v.extra && CAN_LEAD && !v.incidentId ? `<button class="btn sm sec" data-act="veh-del" data-vid="${v.id}">Selbst angelegtes Fahrzeug löschen</button>` : ''}
       ${inc ? `<div class="hint">Im Einsatz: <b>${esc(inc.title)}</b>, ${esc(inc.addr.street)}</div><button class="btn" data-act="release" data-vid="${v.id}">Freimelden – Status 1</button>` : ''}</div>
       ${sim.isFree(v) && running.length ? `<div class="grp2"><h5>Einem Einsatz zuweisen</h5><div class="fld"><select id="vaInc">${running.map((i) => `<option value="${i.id}" ${i.id === UI.sel ? 'selected' : ''}>${esc(i.title)} – ${esc(i.addr.street)}</option>`).join('')}</select></div><button class="btn" data-act="assign" data-vid="${v.id}">Anfordern</button></div>` : ''}
@@ -7940,6 +7960,7 @@ document.addEventListener('click', async (e) => {
     case 'claim': if (await tryClaim(true)) refreshUL(); break;
     case 'ar-del': case 'ar-add': case 'ar-fadd': case 'ar-fdel': case 'ar-cancel': case 'ar-go': await arClick(act, b); break;
     case 'log-del': if (CAN_LEAD) { const k = b.dataset.t + '|' + b.dataset.i; if (UI.logDelAsk !== k) { UI.logDelAsk = k; UI.sheetLive && UI.sheetLive(); break; } UI.logDelAsk = null; const i0 = sim.incById(UI.sel); const e0 = i0 && i0.log[+b.dataset.i]; if (e0 && String(e0.t) === b.dataset.t) { const ok = await api.logDel(i0, e0.t, e0.text); toast(ok ? 'Eintrag gelöscht' : 'Löschen nicht möglich'); } render(true); UI.sheetLive && UI.sheetLive(); } break;
+    case 'veh-verl': if (CAN_LEAD) { const site = $('#vlSite').value; const ok = await api.verlegen(b.dataset.vid, site); const v = sim.byId(b.dataset.vid); toast(ok ? `${v ? v.name : 'Einheit'} ${site ? 'verlegt nach ' + (SITES[site] ? SITES[site].label : site) : 'zurück zum Heimatstandort'}` : 'Verlegen nicht möglich (im Einsatz?)'); closeSheet(); render(true); } break;
     case 'av-open': if (CAN_LEAD) openAddVeh(); break;
     case 'av-add': if (CAN_LEAD) await addVehGo(); break;
     case 'veh-del': if (CAN_LEAD) { const ok = await api.delVeh(b.dataset.vid); closeSheet(); toast(ok ? 'Fahrzeug gelöscht' : 'Löschen nicht möglich (im Einsatz?)'); render(true); } break;
