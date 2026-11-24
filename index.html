@@ -1245,6 +1245,9 @@ body.paused #clock { opacity: .55; }
 .fl-cats { grid-column: 1 / -1; justify-self: start; } .fl-cats small { opacity: .65; font-weight: 500; margin-left: 2px; }
 .fl-add { grid-column: 1 / -1; justify-self: start; }
 .ni-frei { margin: 4px 0 10px; } .ni-frei summary { cursor: pointer; font-weight: 600; font-size: 14px; padding: 4px 0; }
+.logl > div { position: relative; } .logx { position: absolute; right: 4px; top: 4px; border: 1px solid var(--line); background: var(--surface, #fff); border-radius: 6px; font-size: 12px; padding: 1px 7px; cursor: pointer; color: var(--ink2); }
+.logx.ask { background: #e03131; color: #fff; border-color: #e03131; font-weight: 700; }
+.logl > div span { padding-right: 34px; }
 .el-b { overflow-y: auto; overflow-x: hidden; padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; gap: 10px; align-content: start; }
 .el-b > * { min-height: max-content; }
 .el .grp2 { grid-template-columns: minmax(0, 1fr); }
@@ -4693,7 +4696,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-24 12:11';
+const APP_VERSION = '2026-11-24 12:16';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -4863,6 +4866,7 @@ const api = {
     applyAuto(patch);
   },
   async setStatus(v, st) { if (REMOTE) return post({ type: 'status', vid: v.id, st }); return sim.setStatus(v, st); },
+  async logDel(inc, t, text) { if (REMOTE) return (await post({ type: 'logdel', incId: inc.id, t, text })).ok; return logDel(inc, { t, text }); },
   async addVeh(d) { if (REMOTE) return (await post(Object.assign({ type: 'addveh' }, d))).ok; return !!vehAdd(d); },
   async delVeh(id) { if (REMOTE) return (await post({ type: 'delveh', vid: id })).ok; return vehDel(id); },
   async retitle(inc, b) { if (REMOTE) return (await post(Object.assign({ type: 'retitle', incId: inc.id }, b))).ok; return retitle(inc, b); },
@@ -5077,7 +5081,14 @@ function retitle(inc, b) {
   inc.title = `${inc.stwText || inc.stw}-${inc.schlagwort}`;
   return true;
 }
-const LEAD_ONLY = new Set(['addveh', 'delveh', 'retitle', 'pause', 'create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung', 'clock', 'erhoehen', 'end', 'status', 'rdlast']);
+function logDel(inc, b) {
+  if (!inc) return false;
+  const i = inc.log.findIndex((l) => l.t === +b.t && l.text === String(b.text));
+  if (i < 0) return false;
+  inc.log.splice(i, 1);
+  return true;
+}
+const LEAD_ONLY = new Set(['logdel', 'addveh', 'delveh', 'retitle', 'pause', 'create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung', 'clock', 'erhoehen', 'end', 'status', 'rdlast']);
 function doAction(b) {
   const inc = b.incId ? sim.incById(b.incId) : null;
   const needInc = ['nachalarm', 'request', 'retry', 'custom-add', 'custom-set', 'drawings', 'erhoehen', 'end', 'sections', 'log', 'rueckmeldung', 'photo'];
@@ -5110,6 +5121,7 @@ function doAction(b) {
     case 'rueckmeldung': inc.log.push({ t: sim.now, text: 'Rückmeldung: ' + String(b.text || '').slice(0, 4000), kind: 'lage' }); return { ok: true };
     case 'pause': sim.paused = !!b.on; return { ok: true };
     case 'addveh': return { ok: !!vehAdd(b) };
+    case 'logdel': return { ok: logDel(inc, b) };
     case 'delveh': return { ok: vehDel(b.vid) };
     case 'retitle': return { ok: retitle(inc, b) };
     case 'speed': sim.speed = [1, 2, 5, 10].includes(+b.v) ? +b.v : 1; return { ok: true };
@@ -5811,7 +5823,7 @@ function closeSheet() { if (UI.ar) { const A = UI.ar; UI.ar = null; A.resolve(nu
 function openLog() {
   const id = UI.sel;
   if (!sim.incById(id)) return;
-  const body = () => { const inc = sim.incById(id); return `<div class="hint">${esc(inc.title)} · ${esc(inc.addr.street)} · Einsatz-Nr ${inc.nr}</div><div class="logl">${inc.log.slice().reverse().map((l) => `<div class="${l.kind}"><time>${fmtTs(l.t)}</time><span>${esc(l.text)}</span></div>`).join('')}</div>`; };
+  const body = () => { const inc = sim.incById(id); return `<div class="hint">${esc(inc.title)} · ${esc(inc.addr.street)} · Einsatz-Nr ${inc.nr}</div><div class="logl">${inc.log.map((l, i) => [l, i]).reverse().map(([l, i]) => `<div class="${l.kind}"><time>${fmtTs(l.t)}</time><span>${esc(l.text)}</span>${CAN_LEAD ? `<button class="logx ${UI.logDelAsk === l.t + '|' + i ? 'ask' : ''}" data-act="log-del" data-t="${l.t}" data-i="${i}" title="Eintrag löschen" aria-label="Eintrag löschen">${UI.logDelAsk === l.t + '|' + i ? 'Löschen?' : '✕'}</button>` : ''}</div>`).join('')}</div>`; };
   openSheet('Verlauf und Lage', body(), { live: () => setHTML($('#sheetBody'), body()) });
 }
 function openTransports() {
@@ -7927,6 +7939,7 @@ document.addEventListener('click', async (e) => {
     case 'open-ul': UI.confirmReset = false; openUL(); break;
     case 'claim': if (await tryClaim(true)) refreshUL(); break;
     case 'ar-del': case 'ar-add': case 'ar-fadd': case 'ar-fdel': case 'ar-cancel': case 'ar-go': await arClick(act, b); break;
+    case 'log-del': if (CAN_LEAD) { const k = b.dataset.t + '|' + b.dataset.i; if (UI.logDelAsk !== k) { UI.logDelAsk = k; UI.sheetLive && UI.sheetLive(); break; } UI.logDelAsk = null; const i0 = sim.incById(UI.sel); const e0 = i0 && i0.log[+b.dataset.i]; if (e0 && String(e0.t) === b.dataset.t) { const ok = await api.logDel(i0, e0.t, e0.text); toast(ok ? 'Eintrag gelöscht' : 'Löschen nicht möglich'); } render(true); UI.sheetLive && UI.sheetLive(); } break;
     case 'av-open': if (CAN_LEAD) openAddVeh(); break;
     case 'av-add': if (CAN_LEAD) await addVehGo(); break;
     case 'veh-del': if (CAN_LEAD) { const ok = await api.delVeh(b.dataset.vid); closeSheet(); toast(ok ? 'Fahrzeug gelöscht' : 'Löschen nicht möglich (im Einsatz?)'); render(true); } break;
