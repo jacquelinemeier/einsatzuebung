@@ -4690,7 +4690,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-23 11:16';
+const APP_VERSION = '2026-11-24 11:49';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -5188,7 +5188,20 @@ async function photon(q, timeoutMs) {
     const f = j.features && j.features[0];
     if (!f) return null;
     return { pos: [f.geometry.coordinates[1], f.geometry.coordinates[0]], props: f.properties };
-  } catch (e) { GEO.ok = false; return null; } finally { clearTimeout(tm); }
+  } catch (e) { GEO.ok = false; return nominatim(q, timeoutMs); } finally { clearTimeout(tm); }
+}
+async function nominatim(q, timeoutMs) {
+  const ctl = new AbortController();
+  const tm = setTimeout(() => ctl.abort(), timeoutMs || 4000);
+  try {
+    const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=1&countrycodes=de&viewbox=7.10,51.55,7.35,51.40&bounded=1&q=${encodeURIComponent(q)}`, { signal: ctl.signal, headers: { 'Accept-Language': 'de' } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const f = j && j[0];
+    if (!f) return null;
+    const a = f.address || {};
+    return { pos: [+f.lat, +f.lon], props: { street: a.road || f.name, name: f.name, housenumber: a.house_number, postcode: a.postcode, district: a.suburb || a.city_district } };
+  } catch (e) { return null; } finally { clearTimeout(tm); }
 }
 async function geocodeAddress(street, plz, timeoutMs) {
   const q = `${street}, ${plz || ''} Bochum`.replace(/\s+/g, ' ');
@@ -5203,8 +5216,13 @@ async function geocodeAddress(street, plz, timeoutMs) {
 }
 async function reverseGeocode(pos) {
   try {
-    const r = await fetch(`https://photon.komoot.io/reverse?lat=${pos[0]}&lon=${pos[1]}&lang=de`);
-    const j = await r.json();
+    let j = null;
+    try { const ctl = new AbortController(); setTimeout(() => ctl.abort(), 3500); const r = await fetch(`https://photon.komoot.io/reverse?lat=${pos[0]}&lon=${pos[1]}&lang=de`, { signal: ctl.signal }); if (r.ok) j = await r.json(); } catch (e) { j = null; }
+    if (!j || !j.features || !j.features.length) {
+      const r2 = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&lat=${pos[0]}&lon=${pos[1]}`, { headers: { 'Accept-Language': 'de' } });
+      const k = r2.ok ? await r2.json() : null; const a = (k && k.address) || {};
+      return a.road ? { street: [a.road, a.house_number].filter(Boolean).join(' '), plz: a.postcode || '', district: a.suburb || a.city_district || '' } : null;
+    }
     const p = j.features && j.features[0] && j.features[0].properties;
     if (!p) return null;
     return { street: [p.street || p.name, p.housenumber].filter(Boolean).join(' '), plz: p.postcode || '', district: p.district || p.locality || '' };
@@ -5849,7 +5867,7 @@ function openErh() {
 
 const KEY_LABEL = Object.fromEntries(Object.entries(CATALOG).map(([k, c]) => [k, c.label + (c.rd ? ' (RD)' : '')]));
 function openNew() {
-  UI.niPos = null;
+  UI.niPos = null; UI.niRev = null;
   const body = `<div class="fld"><label for="niKey">Stichwort</label><select id="niKey">${Object.keys(CATALOG).map((k) => `<option value="${k}">${KEY_LABEL[k]}</option>`).join('')}</select></div>
     <div class="fld"><label for="niItem">Schlagwort / Einsatzanlass</label><select id="niItem"></select></div>
     <div class="fld"><label>Adresse</label><div class="seg" id="niMode"><button data-act="ni-mode" data-m="rand" class="on">Zufällig</button><button data-act="ni-mode" data-m="list">Aus Liste</button><button data-act="ni-mode" data-m="free">Eingabe / Karte</button></div></div>
@@ -5876,7 +5894,7 @@ function setNiMode(m) {
       UI.niMap.on('click', async (e) => {
         UI.niPos = [e.latlng.lat, e.latlng.lng];
         if (UI.niMk) UI.niMk.setLatLng(e.latlng); else UI.niMk = L.marker(e.latlng, { icon: L.divIcon({ className: '', html: `<div class="mk-inc">${ICON.fire}</div>`, iconSize: [34, 34], iconAnchor: [17, 17] }) }).addTo(UI.niMap);
-        $('#niFree').value = 'Ort auf Karte gewählt';
+        $('#niFree').value = 'Ort auf Karte gewählt'; UI.niRev = null;
         const r = await reverseGeocode(UI.niPos);
         if (r && r.street) { $('#niFree').value = `${r.street}${r.plz ? ', ' + r.plz : ''}`; UI.niRev = r; }
       });
@@ -5898,14 +5916,18 @@ async function submitNew() {
   } else if (UI.niMode === 'free') {
     const txt = $('#niFree').value.trim();
     if (UI.niPos) {
+      // eingetippter Text hat Vorrang; nur ohne Text die Rückwärtssuche nehmen
       const r = UI.niRev || {};
+      const typed = txt && txt !== 'Ort auf Karte gewählt' ? txt : '';
+      const m0 = typed.match(/^(.*?)(?:,\s*(\d{5}))?\s*(?:Bochum)?$/i);
       o.pos = UI.niPos;
-      o.addr = { street: r.street || txt || 'Ort auf Karte', plz: r.plz || '', district: r.district || '', type: 'W', object: '' };
+      o.addr = typed ? { street: (m0 && m0[1]) || typed, plz: (m0 && m0[2]) || '', district: '', type: 'W', object: '' }
+        : { street: r.street || 'Ort auf Karte', plz: r.plz || '', district: r.district || '', type: 'W', object: '' };
     } else if (txt) {
       const m = txt.match(/^(.*?)(?:,\s*(\d{5}))?\s*(?:Bochum)?$/i);
       const street = (m && m[1]) || txt, plz = (m && m[2]) || '';
-      const g = await geocodeAddress(street, plz, 5000);
-      if (!g) { toast('Adresse nicht gefunden – bitte auf die Karte tippen.'); return; }
+      const g = (await geocodeAddress(street, plz, 5000)) || elLocalPos(street, plz);
+      if (!g) { toast('Adresse nicht gefunden – bitte auf die Karte tippen (Adresse bleibt wie eingetippt).'); return; }
       o.pos = g;
       o.addr = { street, plz, district: '', type: 'W', object: '' };
     } else { toast('Bitte Adresse eingeben oder Ort auf der Karte wählen.'); return; }
@@ -8043,7 +8065,7 @@ async function tickOnce() {
 /* ---------- Start: leer, ohne Beispiel-Einsätze ---------- */
 (async function start() {
   setView('details');
-  refineStations();
+  // refineStations() aus: belastet die Adresssuche (Sperre bei vielen Geräten im selben Netz)
   if (!ONLINE) { render(true); return; }
   const s = await loadSnapFromDb();
   if (s) { applySnap(s); NET.lastSnap = Date.now(); }
