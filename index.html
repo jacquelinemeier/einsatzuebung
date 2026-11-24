@@ -1248,6 +1248,7 @@ body.paused #clock { opacity: .55; }
 .logl > div { position: relative; } .logx { position: absolute; right: 4px; top: 4px; border: 1px solid var(--line); background: var(--surface, #fff); border-radius: 6px; font-size: 12px; padding: 1px 7px; cursor: pointer; color: var(--ink2); }
 .logx.ask { background: #e03131; color: #fff; border-color: #e03131; font-weight: 700; }
 .logl > div span { padding-right: 34px; }
+.ende-ed { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; } .ende-ed input { width: 80px; }
 .el-b { overflow-y: auto; overflow-x: hidden; padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; gap: 10px; align-content: start; }
 .el-b > * { min-height: max-content; }
 .el .grp2 { grid-template-columns: minmax(0, 1fr); }
@@ -4698,7 +4699,7 @@ const sim = createSim();
    online: Anmeldung über Supabase. Ein Gerät der Übungsleitung ist die „Zentrale“:
            es berechnet die Übung und verteilt den Stand live an alle anderen.
    lokal:  Einzelplatz ohne Server (Notfall / Plan B). */
-const APP_VERSION = '2026-11-24 12:20';
+const APP_VERSION = '2026-11-24 12:23';
 const APPX = window.APP || { mode: 'local', role: 'einzel', user: { id: 'lokal', name: 'Einzelplatz' } };
 const ONLINE = APPX.mode === 'online';
 let REMOTE = ONLINE; // true = diese Seite ist nicht die Zentrale und bekommt den Stand geliefert
@@ -4870,6 +4871,7 @@ const api = {
   async setStatus(v, st) { if (REMOTE) return post({ type: 'status', vid: v.id, st }); return sim.setStatus(v, st); },
   async logDel(inc, t, text) { if (REMOTE) return (await post({ type: 'logdel', incId: inc.id, t, text })).ok; return logDel(inc, { t, text }); },
   async verlegen(vid, site) { if (REMOTE) return (await post({ type: 'verlegen', vid, site })).ok; return verlegen({ vid, site }); },
+  async setEnde(inc, mode, min) { if (REMOTE) return (await post({ type: 'ende', incId: inc.id, mode, min })).ok; return setEnde(inc, { mode, min }); },
   async addVeh(d) { if (REMOTE) return (await post(Object.assign({ type: 'addveh' }, d))).ok; return !!vehAdd(d); },
   async delVeh(id) { if (REMOTE) return (await post({ type: 'delveh', vid: id })).ok; return vehDel(id); },
   async retitle(inc, b) { if (REMOTE) return (await post(Object.assign({ type: 'retitle', incId: inc.id }, b))).ok; return retitle(inc, b); },
@@ -5105,7 +5107,13 @@ function verlegen(b) {
   }
   return true;
 }
-const LEAD_ONLY = new Set(['verlegen', 'logdel', 'addveh', 'delveh', 'retitle', 'pause', 'create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung', 'clock', 'erhoehen', 'end', 'status', 'rdlast']);
+function setEnde(inc, b) {
+  if (!inc || inc.status !== 'laufend') return false;
+  if (b.mode === 'open') inc.endAt = null;
+  else { const m = Math.max(1, Math.min(600, Math.round(+b.min) || 30)); inc.endAt = sim.now + m * 60000; }
+  return true;
+}
+const LEAD_ONLY = new Set(['ende', 'verlegen', 'logdel', 'addveh', 'delveh', 'retitle', 'pause', 'create', 'speed', 'auto', 'reset', 'photo', 'rueckmeldung', 'clock', 'erhoehen', 'end', 'status', 'rdlast']);
 function doAction(b) {
   const inc = b.incId ? sim.incById(b.incId) : null;
   const needInc = ['nachalarm', 'request', 'retry', 'custom-add', 'custom-set', 'drawings', 'erhoehen', 'end', 'sections', 'log', 'rueckmeldung', 'photo'];
@@ -5138,6 +5146,7 @@ function doAction(b) {
     case 'rueckmeldung': inc.log.push({ t: sim.now, text: 'Rückmeldung: ' + String(b.text || '').slice(0, 4000), kind: 'lage' }); return { ok: true };
     case 'pause': sim.paused = !!b.on; return { ok: true };
     case 'addveh': return { ok: !!vehAdd(b) };
+    case 'ende': return { ok: setEnde(inc, b) };
     case 'verlegen': return { ok: verlegen(b) };
     case 'logdel': return { ok: logDel(inc, b) };
     case 'delveh': return { ok: vehDel(b.vid) };
@@ -5720,6 +5729,9 @@ function renderDetails() {
         ? `<button class="btn" data-act="nach">Nachfordern</button><button class="btn sec" data-act="erh">Stufe erhöhen</button><button class="btn sec" data-act="rt-open">Stichwort ändern</button><button class="btn sec" data-act="ab-open">Abschnitte</button><button class="btn sec" data-act="end">Beenden</button>`
         : `<button class="btn" data-act="nach">Nachfordern</button><button class="btn sec" data-act="ab-open">Abschnitte</button>`;
     if (CAN_LEAD) act += inc.endAt ? `<div class="hint" style="grid-column:1/-1">Geplantes Einsatzende ca. ${fmtT(inc.endAt)} Uhr</div>` : '<div class="hint" style="grid-column:1/-1">Offener Einsatz – wird nur manuell beendet</div>';
+    if (CAN_LEAD) act += UI.endeEdit === inc.id
+      ? `<div class="ende-ed" style="grid-column:1/-1"><span>Einsatz endet</span><input type="number" id="endeMin" min="1" max="600" value="${UI.endeDef || 30}" aria-label="Minuten bis Einsatzende"><span>Min.</span><button class="btn sm" data-act="ende-set" data-m="min">Übernehmen</button><button class="btn sm sec" data-act="ende-set" data-m="open">Offen (nur manuell)</button><button class="btn sm sec" data-act="ende-open">✕</button></div>`
+      : '<div style="grid-column:1/-1"><button class="btn sm sec" data-act="ende-open">Einsatzende ändern</button></div>';
   }
   setHTML($('#dAct'), act);
 
@@ -7961,6 +7973,8 @@ document.addEventListener('click', async (e) => {
     case 'ar-del': case 'ar-add': case 'ar-fadd': case 'ar-fdel': case 'ar-cancel': case 'ar-go': await arClick(act, b); break;
     case 'log-del': if (CAN_LEAD) { const k = b.dataset.t + '|' + b.dataset.i; if (UI.logDelAsk !== k) { UI.logDelAsk = k; UI.sheetLive && UI.sheetLive(); break; } UI.logDelAsk = null; const i0 = sim.incById(UI.sel); const e0 = i0 && i0.log[+b.dataset.i]; if (e0 && String(e0.t) === b.dataset.t) { const ok = await api.logDel(i0, e0.t, e0.text); toast(ok ? 'Eintrag gelöscht' : 'Löschen nicht möglich'); } render(true); UI.sheetLive && UI.sheetLive(); } break;
     case 'veh-verl': if (CAN_LEAD) { const site = $('#vlSite').value; const ok = await api.verlegen(b.dataset.vid, site); const v = sim.byId(b.dataset.vid); toast(ok ? `${v ? v.name : 'Einheit'} ${site ? 'verlegt nach ' + (SITES[site] ? SITES[site].label : site) : 'zurück zum Heimatstandort'}` : 'Verlegen nicht möglich (im Einsatz?)'); closeSheet(); render(true); } break;
+    case 'ende-open': if (CAN_LEAD && inc) { UI.endeEdit = UI.endeEdit === inc.id ? null : inc.id; UI.endeDef = inc.endAt ? Math.max(1, Math.round((inc.endAt - sim.now) / 60000)) : 30; render(true); } break;
+    case 'ende-set': if (CAN_LEAD && inc) { const mode = b.dataset.m; const min = mode === 'min' ? +$('#endeMin').value : 0; const ok = await api.setEnde(inc, mode, min); if (ok) await api.log(inc, mode === 'open' ? 'Einsatzende: offen – nur manuelles Beenden' : `Einsatzende gesetzt: in ${Math.round(min)} Min.`, 'info'); UI.endeEdit = null; render(true); toast(ok ? (mode === 'open' ? 'Einsatz endet nicht mehr von selbst' : `Einsatz endet in ${Math.round(min)} Min.`) : 'Nicht möglich'); } break;
     case 'av-open': if (CAN_LEAD) openAddVeh(); break;
     case 'av-add': if (CAN_LEAD) await addVehGo(); break;
     case 'veh-del': if (CAN_LEAD) { const ok = await api.delVeh(b.dataset.vid); closeSheet(); toast(ok ? 'Fahrzeug gelöscht' : 'Löschen nicht möglich (im Einsatz?)'); render(true); } break;
